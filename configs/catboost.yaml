@@ -1,0 +1,19 @@
+name: cat_baseline
+model: catboost
+seed: 2026
+target_transform: log1p
+use_cat: true
+save_oof: true
+cv_val_months: [[2025, 2], [2025, 1], [2024, 12], [2024, 3]]
+params:
+  loss_function: MAE
+  eval_metric: MAE
+  learning_rate: 0.05
+  depth: 8
+  l2_leaf_reg: 3.0
+  random_strength: 1.0
+  iterations: 6000
+  od_type: Iter
+  od_wait: 250
+  thread_count: 4
+  verbose: false

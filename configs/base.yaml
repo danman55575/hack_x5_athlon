@@ -1,0 +1,5 @@
+seed: 2026
+target_transform: log1p
+use_cat: true
+save_oof: true
+cv_val_months: [[2025, 2], [2025, 1], [2024, 12], [2024, 3]]
