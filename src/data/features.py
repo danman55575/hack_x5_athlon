@@ -46,6 +46,26 @@ def add_diff_features(df: pd.DataFrame, target: str = "rto", group="store_id") -
     df[f"{target}_yoy_ratio"] = lag1 / lag12.replace(0, np.nan)
     return df
 
+def add_normalized_features(df, target="rto", group="store_id"):
+    df = df.sort_values([group, "t"]).copy()
+    g = df.groupby(group)[target]
+    lag1 = g.shift(1)
+    lag12 = g.shift(12)
+    # «Базовый уровень»
+    cummean = lag1.groupby(df[group]).expanding().mean().reset_index(level=0, drop=True)
+    df[f"{target}_lag1_to_cummean"] = lag1 / cummean.replace(0, np.nan)
+    df[f"{target}_lag1_to_same_month"] = lag1 / lag12.replace(0, np.nan)
+    # Линейный тренд за последние 6 месяцев
+    def _slope(x):
+        x = x.dropna()
+        if len(x) < 3: return np.nan
+        return np.polyfit(np.arange(len(x)), x.values, 1)[0]
+    df[f"{target}_trend_6"] = (
+        g.shift(1).groupby(df[group])
+         .rolling(6, min_periods=3).apply(_slope, raw=False)
+         .reset_index(level=0, drop=True)
+    )
+    return df
 
 def add_same_month_history(df: pd.DataFrame, target: str = "rto", group="store_id") -> pd.DataFrame:
     """Сезонные лаги: РТО того же месяца годом ранее (и за 2 года, если есть)."""
@@ -119,9 +139,14 @@ def downcast(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], downcast="integer")
     return df
 
+LEAKY_CURRENT_COLS = [
+    "promo_per_check",
+    "items_per_check",
+    "cancellations",
+    "work_hours",
+]
 
-def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame, list[str], list[str]]:
-    """Главный pipeline. Возвращает df, feature_columns, categorical_columns."""
+def build_features(df: pd.DataFrame, target: str = "rto"):
     df = add_lag_features(df, target=target)
     df = add_rolling_features(df, target=target)
     df = add_diff_features(df, target=target)
@@ -129,10 +154,11 @@ def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame,
     df = add_dynamic_lags(df)
     df = add_calendar_features(df)
     df = add_store_stats(df, target=target)
+    df = add_normalized_features(df)
     df, _ = encode_categoricals_ordinal(df)
     df = downcast(df)
 
-    drop_cols = {target, "store_id", "year"}
+    drop_cols = {target, "store_id", "year"} | set(LEAKY_CURRENT_COLS)
     feature_cols = [c for c in df.columns if c not in drop_cols]
     cat_features = [c for c in CAT_COLS if c in feature_cols]
     return df, feature_cols, cat_features
