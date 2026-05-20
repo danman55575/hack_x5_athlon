@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+.uv/
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+experiments/logs/*
+experiments/models/*
+experiments/oof/*
+experiments/predictions/*
+!experiments/**/.gitkeep
+.ipynb_checkpoints/
+*.log
+.DS_Store
