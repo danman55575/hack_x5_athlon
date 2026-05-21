@@ -1,20 +1,23 @@
-name: xgb_baseline
+name: xgb_l1_log
 model: xgboost
 seed: 2026
 target_transform: log1p
-use_cat: false      # XGB cat не любим лишний раз
+use_cat: false
 save_oof: true
-cv_val_months: [[2025, 2], [2024, 9], [2024, 3]] # removed [2025, 1]
+cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+seed_bag: [2026, 41, 777]
+winsorize_quantile: 0.999
 params:
   objective: reg:absoluteerror
   eval_metric: mae
-  learning_rate: 0.04
+  learning_rate: 0.03
   max_depth: 8
   min_child_weight: 8
   subsample: 0.85
   colsample_bytree: 0.85
   reg_lambda: 1.0
+  reg_alpha: 0.1
   tree_method: hist
   nthread: 4
-  num_boost_round: 8000
-  early_stopping_rounds: 250
+  num_boost_round: 12000
+  early_stopping_rounds: 300

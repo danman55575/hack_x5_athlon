@@ -1,15 +1,15 @@
-name: lgbm_tweedie
+name: lgbm_mape_weight
 model: lightgbm
 seed: 2026
 target_transform: none
 use_cat: true
 save_oof: true
+mape_weights: true            # sample_weight = 1 / max(y, eps)
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
 seed_bag: [2026, 41, 777, 1337, 31337]
 winsorize_quantile: 0.999
 params:
-  objective: tweedie
-  tweedie_variance_power: 1.5
+  objective: regression
   metric: mape
   learning_rate: 0.03
   num_leaves: 127

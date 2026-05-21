@@ -1,19 +1,21 @@
-name: cat_baseline
+name: cat_l1_log
 model: catboost
 seed: 2026
 target_transform: log1p
 use_cat: true
 save_oof: true
-cv_val_months: [[2025, 2], [2024, 9], [2024, 3]] # removed [2025, 1]
+cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+seed_bag: [2026, 41, 777]
+winsorize_quantile: 0.999
 params:
   loss_function: MAE
   eval_metric: MAE
-  learning_rate: 0.05
-  depth: 5 # change from 8 to 5
+  learning_rate: 0.04
+  depth: 7
   l2_leaf_reg: 3.0
   random_strength: 1.0
-  iterations: 6000
+  iterations: 10000
   od_type: Iter
-  od_wait: 250
+  od_wait: 300
   thread_count: 4
   verbose: false

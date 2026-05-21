@@ -2,4 +2,7 @@ seed: 2026
 target_transform: log1p
 use_cat: true
 save_oof: true
-cv_val_months: [[2025, 2], [2024, 9], [2024, 3]] # removed [2025, 1]
+# 4 fold чтобы покрыть тот же месяц (март), ближайший к таргету (фев) и сезонные точки
+cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+seed_bag: [2026, 41, 777, 1337, 31337]
+winsorize_quantile: 0.999     # winsorization верхнего хвоста при тренировке

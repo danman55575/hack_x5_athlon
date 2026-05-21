@@ -10,7 +10,7 @@ from .base import BaseModel
 class LightGBMModel(BaseModel):
     name = "lightgbm"
     default_params = {
-        "objective": "regression_l1",   # L1 на лог-таргете ≈ MAPE
+        "objective": "regression_l1",
         "metric": "mae",
         "learning_rate": 0.05,
         "num_leaves": 63,
@@ -23,24 +23,29 @@ class LightGBMModel(BaseModel):
         "num_threads": 4,
     }
 
-    def fit(self, X, y, X_val=None, y_val=None, cat_features=None):
+    def fit(self, X, y, X_val=None, y_val=None, cat_features=None,
+            sample_weight=None, sample_weight_val=None, seed=None):
         params = {**self.default_params, **self.params}
+        if seed is not None:
+            params["seed"] = int(seed)
+            params["bagging_seed"] = int(seed)
+            params["feature_fraction_seed"] = int(seed)
         n_rounds = params.pop("num_boost_round", 5000)
         early_stop = params.pop("early_stopping_rounds", 200)
         cat_features = cat_features or "auto"
-        dtrain = lgb.Dataset(X, label=y, categorical_feature=cat_features)
-        valid_sets = [dtrain]
-        valid_names = ["train"]
+        dtrain = lgb.Dataset(X, label=y, categorical_feature=cat_features,
+                             weight=sample_weight)
+        valid_sets, valid_names = [dtrain], ["train"]
+        callbacks = [lgb.log_evaluation(period=0)]
         if X_val is not None:
-            dval = lgb.Dataset(X_val, label=y_val, categorical_feature=cat_features, reference=dtrain)
+            dval = lgb.Dataset(X_val, label=y_val, categorical_feature=cat_features,
+                               reference=dtrain, weight=sample_weight_val)
             valid_sets.append(dval); valid_names.append("valid")
-            callbacks = [lgb.early_stopping(early_stop, verbose=False),
-                         lgb.log_evaluation(period=0)]
-        else:
-            callbacks = [lgb.log_evaluation(period=0)]
+            callbacks.insert(0, lgb.early_stopping(early_stop, verbose=False))
         self.model_ = lgb.train(params, dtrain, num_boost_round=n_rounds,
                                 valid_sets=valid_sets, valid_names=valid_names,
                                 callbacks=callbacks)
+        self.best_iteration_ = getattr(self.model_, "best_iteration", n_rounds) or n_rounds
         return self
 
     def predict(self, X):
@@ -67,16 +72,20 @@ class XGBoostModel(BaseModel):
         "nthread": 4,
     }
 
-    def fit(self, X, y, X_val=None, y_val=None, cat_features=None):
+    def fit(self, X, y, X_val=None, y_val=None, cat_features=None,
+            sample_weight=None, sample_weight_val=None, seed=None):
         params = {**self.default_params, **self.params}
+        if seed is not None:
+            params["seed"] = int(seed)
         n_rounds = params.pop("num_boost_round", 5000)
         early_stop = params.pop("early_stopping_rounds", 200)
         enable_cat = bool(cat_features)
         params["enable_categorical"] = enable_cat
-        dtrain = xgb.DMatrix(X, label=y, enable_categorical=enable_cat)
+        dtrain = xgb.DMatrix(X, label=y, enable_categorical=enable_cat, weight=sample_weight)
         evals = [(dtrain, "train")]
         if X_val is not None:
-            dval = xgb.DMatrix(X_val, label=y_val, enable_categorical=enable_cat)
+            dval = xgb.DMatrix(X_val, label=y_val, enable_categorical=enable_cat,
+                               weight=sample_weight_val)
             evals.append((dval, "valid"))
             self.model_ = xgb.train(params, dtrain, num_boost_round=n_rounds,
                                     evals=evals, early_stopping_rounds=early_stop,
@@ -84,6 +93,7 @@ class XGBoostModel(BaseModel):
         else:
             self.model_ = xgb.train(params, dtrain, num_boost_round=n_rounds,
                                     evals=evals, verbose_eval=False)
+        self.best_iteration_ = getattr(self.model_, "best_iteration", n_rounds) or n_rounds
         return self
 
     def predict(self, X):
@@ -110,14 +120,19 @@ class CatBoostModel(BaseModel):
         "verbose": False,
     }
 
-    def fit(self, X, y, X_val=None, y_val=None, cat_features=None):
+    def fit(self, X, y, X_val=None, y_val=None, cat_features=None,
+            sample_weight=None, sample_weight_val=None, seed=None):
         params = {**self.default_params, **self.params}
+        if seed is not None:
+            params["random_seed"] = int(seed)
         cat_features = cat_features or []
-        # CatBoost требует int категории передать
-        train_pool = Pool(X, y, cat_features=cat_features)
-        eval_pool = Pool(X_val, y_val, cat_features=cat_features) if X_val is not None else None
+        train_pool = Pool(X, y, cat_features=cat_features, weight=sample_weight)
+        eval_pool = (Pool(X_val, y_val, cat_features=cat_features, weight=sample_weight_val)
+                     if X_val is not None else None)
         self.model_ = CatBoostRegressor(**params)
-        self.model_.fit(train_pool, eval_set=eval_pool, use_best_model=eval_pool is not None)
+        self.model_.fit(train_pool, eval_set=eval_pool,
+                        use_best_model=eval_pool is not None)
+        self.best_iteration_ = self.model_.get_best_iteration() or params["iterations"]
         return self
 
     def predict(self, X):

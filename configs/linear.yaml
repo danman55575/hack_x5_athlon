@@ -1,10 +1,12 @@
-name: ridge_baseline
+name: ridge_log
 model: linear
 seed: 2026
 target_transform: log1p
 use_cat: false
 save_oof: true
-cv_val_months: [[2025, 2], [2024, 9], [2024, 3]] # removed [2025, 1]
+cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+seed_bag: [2026]
+winsorize_quantile: 0.999
 params:
   kind: ridge
-  alpha: 1.0
+  alpha: 5.0

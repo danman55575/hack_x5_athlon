@@ -1,12 +1,17 @@
-"""Feature engineering. Все фичи — без утечек таргета: лаги/роллинги считаются по shift(1)."""
+"""Безутечковая фичегенерация. Все лаги/роллинги/тренды — со сдвигом shift(1).
+Target encoding делается отдельно out-of-fold в pipeline."""
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-from .loader import CAT_COLS, STORE_STATIC_COLS, DYNAMIC_COLS
+from .loader import CAT_COLS, DYNAMIC_COLS
 
 
-def add_lag_features(df: pd.DataFrame, target: str = "rto",
-                     lags=(1, 2, 3, 6, 12), group="store_id") -> pd.DataFrame:
+def _shifted(df, group, col, k):
+    return df.groupby(group)[col].shift(k)
+
+
+def add_lag_features(df, target="rto", lags=(1, 2, 3, 4, 5, 6, 9, 12, 13, 14, 15, 18, 24),
+                     group="store_id"):
     df = df.sort_values([group, "t"]).copy()
     g = df.groupby(group)[target]
     for L in lags:
@@ -14,110 +19,145 @@ def add_lag_features(df: pd.DataFrame, target: str = "rto",
     return df
 
 
-def add_rolling_features(df: pd.DataFrame, target: str = "rto",
-                         windows=(3, 6, 12), group="store_id") -> pd.DataFrame:
+def add_rolling_features(df, target="rto", windows=(3, 6, 12, 24), group="store_id"):
     df = df.sort_values([group, "t"]).copy()
     shifted = df.groupby(group)[target].shift(1)
     for w in windows:
-        df[f"{target}_rmean_{w}"] = (shifted.groupby(df[group])
-                                     .rolling(window=w, min_periods=max(1, w // 2))
-                                     .mean().reset_index(level=0, drop=True))
-        df[f"{target}_rstd_{w}"] = (shifted.groupby(df[group])
-                                    .rolling(window=w, min_periods=max(2, w // 2))
-                                    .std().reset_index(level=0, drop=True))
-        df[f"{target}_rmin_{w}"] = (shifted.groupby(df[group])
-                                    .rolling(window=w, min_periods=max(1, w // 2))
-                                    .min().reset_index(level=0, drop=True))
-        df[f"{target}_rmax_{w}"] = (shifted.groupby(df[group])
-                                    .rolling(window=w, min_periods=max(1, w // 2))
-                                    .max().reset_index(level=0, drop=True))
+        roll = shifted.groupby(df[group]).rolling(window=w, min_periods=max(2, w // 3))
+        df[f"{target}_rmean_{w}"] = roll.mean().reset_index(level=0, drop=True)
+        df[f"{target}_rstd_{w}"] = roll.std().reset_index(level=0, drop=True)
+        df[f"{target}_rmin_{w}"] = roll.min().reset_index(level=0, drop=True)
+        df[f"{target}_rmax_{w}"] = roll.max().reset_index(level=0, drop=True)
+        df[f"{target}_rmedian_{w}"] = roll.median().reset_index(level=0, drop=True)
     return df
 
 
-def add_diff_features(df: pd.DataFrame, target: str = "rto", group="store_id") -> pd.DataFrame:
+def add_diff_features(df, target="rto", group="store_id"):
     df = df.sort_values([group, "t"]).copy()
     g = df.groupby(group)[target]
-    lag1 = g.shift(1); lag2 = g.shift(2); lag3 = g.shift(3); lag12 = g.shift(12)
+    lag1, lag2, lag3, lag6, lag12 = g.shift(1), g.shift(2), g.shift(3), g.shift(6), g.shift(12)
     df[f"{target}_diff_1"] = lag1 - lag2
     df[f"{target}_diff_2"] = lag2 - lag3
     df[f"{target}_pct_1"] = (lag1 - lag2) / lag2.replace(0, np.nan)
-    # year-over-year
+    df[f"{target}_pct_2"] = (lag2 - lag3) / lag3.replace(0, np.nan)
+    df[f"{target}_diff_6"] = lag1 - lag6
+    df[f"{target}_pct_6"] = (lag1 - lag6) / lag6.replace(0, np.nan)
     df[f"{target}_yoy_diff"] = lag1 - lag12
     df[f"{target}_yoy_ratio"] = lag1 / lag12.replace(0, np.nan)
+    df[f"{target}_log_ratio_1_12"] = np.log1p(lag1) - np.log1p(lag12)
     return df
 
-def add_normalized_features(df, target="rto", group="store_id"):
-    df = df.sort_values([group, "t"]).copy()
-    g = df.groupby(group)[target]
-    lag1 = g.shift(1)
-    lag12 = g.shift(12)
-    # «Базовый уровень»
-    cummean = lag1.groupby(df[group]).expanding().mean().reset_index(level=0, drop=True)
-    df[f"{target}_lag1_to_cummean"] = lag1 / cummean.replace(0, np.nan)
-    df[f"{target}_lag1_to_same_month"] = lag1 / lag12.replace(0, np.nan)
-    # Линейный тренд за последние 6 месяцев
-    def _slope(x):
-        x = x.dropna()
-        if len(x) < 3: return np.nan
-        return np.polyfit(np.arange(len(x)), x.values, 1)[0]
-    df[f"{target}_trend_6"] = (
-        g.shift(1).groupby(df[group])
-         .rolling(6, min_periods=3).apply(_slope, raw=False)
-         .reset_index(level=0, drop=True)
-    )
-    return df
 
-def add_same_month_history(df: pd.DataFrame, target: str = "rto", group="store_id") -> pd.DataFrame:
-    """Сезонные лаги: РТО того же месяца годом ранее (и за 2 года, если есть)."""
+def add_seasonal_features(df, target="rto", group="store_id"):
     df = df.sort_values([group, "t"]).copy()
-    # rto тот же месяц год назад (lag 12) и два года назад (lag 24)
     g = df.groupby(group)[target]
     df[f"{target}_same_month_1y"] = g.shift(12)
     df[f"{target}_same_month_2y"] = g.shift(24)
-    df[f"{target}_same_month_mean"] = df[[f"{target}_same_month_1y", f"{target}_same_month_2y"]].mean(axis=1)
-    # Сравнение с тем же месяцем
+    df[f"{target}_same_month_mean"] = df[[f"{target}_same_month_1y",
+                                           f"{target}_same_month_2y"]].mean(axis=1)
+    # Прогноз "наивный сезонный": last_value * (lag12 / lag24)
     lag1 = g.shift(1)
-    df[f"{target}_ratio_lag1_to_same_month"] = lag1 / df[f"{target}_same_month_1y"].replace(0, np.nan)
+    lag12 = g.shift(12)
+    lag24 = g.shift(24)
+    season_trend = lag12 / lag24.replace(0, np.nan)
+    df[f"{target}_naive_seasonal"] = df[f"{target}_same_month_1y"] * season_trend
+    df[f"{target}_ratio_lag1_sm1y"] = lag1 / df[f"{target}_same_month_1y"].replace(0, np.nan)
     return df
 
 
-def add_dynamic_lags(df: pd.DataFrame, group="store_id") -> pd.DataFrame:
-    """Лаги динамических признаков (промо, чеки, отмены, часы)."""
+def add_trend_features(df, target="rto", group="store_id"):
+    """Линейный тренд по последним n лагам (slope/intercept) для двух окон."""
+    df = df.sort_values([group, "t"]).copy()
+    shifted = df.groupby(group)[target].shift(1)
+
+    def _slope(arr):
+        a = np.asarray(arr, dtype=np.float64)
+        a = a[~np.isnan(a)]
+        if len(a) < 3:
+            return np.nan
+        x = np.arange(len(a))
+        return float(np.polyfit(x, a, 1)[0])
+
+    for w in (3, 6, 12):
+        s = (shifted.groupby(df[group])
+             .rolling(window=w, min_periods=3)
+             .apply(_slope, raw=False)
+             .reset_index(level=0, drop=True))
+        df[f"{target}_slope_{w}"] = s
+    return df
+
+
+def add_expanding_stats(df, target="rto", group="store_id"):
+    df = df.sort_values([group, "t"]).copy()
+    shifted = df.groupby(group)[target].shift(1)
+    grp = shifted.groupby(df[group]).expanding()
+    df[f"{target}_cummean"] = grp.mean().reset_index(level=0, drop=True)
+    df[f"{target}_cumstd"]  = grp.std().reset_index(level=0, drop=True)
+    df[f"{target}_cummax"]  = grp.max().reset_index(level=0, drop=True)
+    df[f"{target}_cummin"]  = grp.min().reset_index(level=0, drop=True)
+    df[f"{target}_lag1_to_cummean"] = (df.groupby(group)[target].shift(1) /
+                                       df[f"{target}_cummean"].replace(0, np.nan))
+    return df
+
+
+def add_dynamic_lags(df, group="store_id"):
     df = df.sort_values([group, "t"]).copy()
     for col in DYNAMIC_COLS:
         if col not in df.columns:
             continue
         g = df.groupby(group)[col]
-        df[f"{col}_lag_1"] = g.shift(1)
+        df[f"{col}_lag_1"]  = g.shift(1)
+        df[f"{col}_lag_2"]  = g.shift(2)
         df[f"{col}_lag_12"] = g.shift(12)
-        df[f"{col}_rmean_3"] = g.shift(1).groupby(df[group]).rolling(3, min_periods=1).mean().reset_index(level=0, drop=True)
+        df[f"{col}_rmean_3"] = (g.shift(1).groupby(df[group])
+                                .rolling(3, min_periods=1).mean()
+                                .reset_index(level=0, drop=True))
+        df[f"{col}_rmean_12"] = (g.shift(1).groupby(df[group])
+                                 .rolling(12, min_periods=3).mean()
+                                 .reset_index(level=0, drop=True))
     return df
 
 
-def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
+def add_calendar_features(df):
     df = df.copy()
-    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12)
-    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12)
-    df["is_jan"] = (df["month"] == 1).astype(np.int8)
-    df["is_mar"] = (df["month"] == 3).astype(np.int8)
-    df["is_dec"] = (df["month"] == 12).astype(np.int8)
-    df["is_summer"] = df["month"].isin([6, 7, 8]).astype(np.int8)
+    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12).astype(np.float32)
+    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12).astype(np.float32)
+    df["is_jan"]    = (df["month"] == 1).astype(np.int8)
+    df["is_feb"]    = (df["month"] == 2).astype(np.int8)
+    df["is_mar"]    = (df["month"] == 3).astype(np.int8)
+    df["is_dec"]    = (df["month"] == 12).astype(np.int8)
+    df["quarter"]   = ((df["month"] - 1) // 3 + 1).astype(np.int8)
     return df
 
 
-def add_store_stats(df: pd.DataFrame, target: str = "rto", group="store_id") -> pd.DataFrame:
-    """Глобальные статистики по магазину, но только по прошлым (через cumulative shift(1))."""
-    df = df.sort_values([group, "t"]).copy()
-    shifted = df.groupby(group)[target].shift(1)
-    df[f"{target}_cummean"] = shifted.groupby(df[group]).expanding().mean().reset_index(level=0, drop=True)
-    df[f"{target}_cumstd"]  = shifted.groupby(df[group]).expanding().std().reset_index(level=0, drop=True)
-    df[f"{target}_cummax"]  = shifted.groupby(df[group]).expanding().max().reset_index(level=0, drop=True)
-    df[f"{target}_cummin"]  = shifted.groupby(df[group]).expanding().min().reset_index(level=0, drop=True)
+def add_group_aggregations(df, target="rto"):
+    """Глобальные signals: средний РТО / средний YoY по region / area_cat / open_date_cat / month.
+    Все агрегации делаются по shifted значениям (только прошлое)."""
+    df = df.sort_values(["store_id", "t"]).copy()
+    df["rto_lag1"] = df.groupby("store_id")[target].shift(1)
+    df["rto_lag12"] = df.groupby("store_id")[target].shift(12)
+
+    # mean lag1 by (region, t) — глобальный сигнал по региону в прошлом месяце
+    for key in ["region", "area_cat", "open_date_cat"]:
+        if key not in df.columns:
+            continue
+        # mean of rto_lag1 by (key, t) — без утечки: lag1 это уже прошлое
+        df[f"grp_{key}_lag1_mean"] = (df.groupby([key, "t"])["rto_lag1"]
+                                       .transform("mean"))
+        df[f"grp_{key}_lag1_median"] = (df.groupby([key, "t"])["rto_lag1"]
+                                         .transform("median"))
+        # YoY-сигнал по группе
+        yoy = df["rto_lag1"] / df["rto_lag12"].replace(0, np.nan)
+        df[f"grp_{key}_yoy_mean"] = yoy.groupby([df[key], df["t"]]).transform("mean")
+
+    # глобальный календарный sig
+    df["grp_all_lag1_mean"] = df.groupby("t")["rto_lag1"].transform("mean")
+
+    df = df.drop(columns=["rto_lag1", "rto_lag12"])
     return df
 
 
-def encode_categoricals_ordinal(df: pd.DataFrame, cat_cols=CAT_COLS) -> tuple[pd.DataFrame, dict]:
-    """Заменяем категории на целочисленные коды. Возвращаем mapping."""
+def encode_categoricals_ordinal(df, cat_cols=CAT_COLS):
     df = df.copy()
     mappings = {}
     for c in cat_cols:
@@ -129,7 +169,7 @@ def encode_categoricals_ordinal(df: pd.DataFrame, cat_cols=CAT_COLS) -> tuple[pd
     return df, mappings
 
 
-def downcast(df: pd.DataFrame) -> pd.DataFrame:
+def downcast(df):
     for c in df.select_dtypes(include="float64").columns:
         df[c] = df[c].astype(np.float32)
     for c in df.select_dtypes(include="int64").columns:
@@ -139,22 +179,20 @@ def downcast(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = pd.to_numeric(df[c], downcast="integer")
     return df
 
-LEAKY_CURRENT_COLS = [
-    "promo_per_check",
-    "items_per_check",
-    "cancellations",
-    "work_hours",
-]
+
+LEAKY_CURRENT_COLS = ["promo_per_check", "items_per_check", "cancellations", "work_hours"]
+
 
 def build_features(df: pd.DataFrame, target: str = "rto"):
     df = add_lag_features(df, target=target)
     df = add_rolling_features(df, target=target)
     df = add_diff_features(df, target=target)
-    df = add_same_month_history(df, target=target)
+    df = add_seasonal_features(df, target=target)
+    df = add_trend_features(df, target=target)
+    df = add_expanding_stats(df, target=target)
     df = add_dynamic_lags(df)
     df = add_calendar_features(df)
-    df = add_store_stats(df, target=target)
-    df = add_normalized_features(df)
+    df = add_group_aggregations(df, target=target)
     df, _ = encode_categoricals_ordinal(df)
     df = downcast(df)
 

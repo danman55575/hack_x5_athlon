@@ -1,16 +1,18 @@
-name: mlp_baseline
+name: mlp_log
 model: mlp
 seed: 2026
 target_transform: log1p
 use_cat: false
 save_oof: true
-cv_val_months: [[2025, 2], [2024, 9], [2024, 3]] # removed [2025, 1]
+cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+seed_bag: [2026, 41, 777]
+winsorize_quantile: 0.999
 params:
   hidden: [512, 256, 128]
   dropout: 0.15
   lr: 0.001
   weight_decay: 0.00001
   batch_size: 4096
-  epochs: 100
-  patience: 15
+  epochs: 120
+  patience: 20
   loss: l1
