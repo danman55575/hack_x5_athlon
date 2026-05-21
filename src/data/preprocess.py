@@ -16,7 +16,7 @@ def clean_outliers(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     # Рабочие часы > 24 — артефакт ввода. Клипуем сверху.
     if "work_hours" in df.columns:
-        df["work_hours"] = df["work_hours"].clip(lower=3, upper=24).astype(np.float32)
+        df["work_hours"] = df["work_hours"].clip(lower=5, upper=25).astype(np.float32)
     # Жёсткие хвосты: 99.5-perc clip с сохранением исходного значения в отдельной колонке
     for col in ["medical_300", "stops_300", "grocery_500", "schools_300",
                 "marketplaces_100", "foot_traffic", "car_traffic",
