@@ -12,3 +12,4 @@ experiments/predictions/*
 .ipynb_checkpoints/
 *.log
 .DS_Store
+catboost_info

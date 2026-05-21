@@ -4,7 +4,7 @@ seed: 2026
 target_transform: none
 use_cat: true
 save_oof: true
-cv_val_months: [[2025, 2], [2025, 1], [2024, 12], [2024, 3]]
+cv_val_months: [[2025, 2], [2024, 9], [2024, 3]] # removed [2025, 1]
 params:
   objective: tweedie
   tweedie_variance_power: 1.5

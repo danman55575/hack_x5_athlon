@@ -4,12 +4,12 @@ seed: 2026
 target_transform: log1p
 use_cat: true
 save_oof: true
-cv_val_months: [[2025, 2], [2025, 1], [2024, 12], [2024, 3]]
+cv_val_months: [[2025, 2], [2024, 9], [2024, 3]] # removed [2025, 1]
 params:
   loss_function: MAE
   eval_metric: MAE
   learning_rate: 0.05
-  depth: 8
+  depth: 5 # change from 8 to 5
   l2_leaf_reg: 3.0
   random_strength: 1.0
   iterations: 6000

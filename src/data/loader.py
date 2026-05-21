@@ -27,7 +27,12 @@ RENAME_MAP = {
     "Пятерочки (500 м)": "p5_500",
     "Количество касс": "cashboxes",
     "Флаг алкогольной лицензии": "alco_flag",
-    "РТО": "rto",
+    "РТО": "rto", # Inflation-adjusted РТО
+    # Target-encoded categorical features (from preprocessing)
+    "Торговая площадь сред РТО": "area_mean_rto",
+    "Дата открытия сред РТО": "open_date_mean_rto",
+    "Регион сред РТО": "region_mean_rto",
+    "Населенный пункт сред РТО": "locality_mean_rto",
 }
 
 CAT_COLS = ["open_date_cat", "area_cat", "locality", "region"]
@@ -36,6 +41,8 @@ STORE_STATIC_COLS = [
     "population", "households", "foot_traffic", "car_traffic",
     "marketplaces_100", "medical_300", "schools_300", "stops_300",
     "grocery_500", "p5_500", "cashboxes", "alco_flag",
+    # Target-encoded features (static per store)
+    "area_mean_rto", "open_date_mean_rto", "region_mean_rto", "locality_mean_rto",
 ]
 DYNAMIC_COLS = ["promo_per_check", "items_per_check", "cancellations", "work_hours"]
 
