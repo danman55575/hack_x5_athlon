@@ -5,7 +5,7 @@ target_transform: log1p
 use_cat: false
 save_oof: true
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
-seed_bag: [2026, 41, 777]
+seed_bag: [2026]
 winsorize_quantile: 0.999
 params:
   hidden: [512, 256, 128]
