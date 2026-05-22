@@ -11,6 +11,38 @@ import pandas as pd
 from .loader import RENAME_MAP, DYNAMIC_COLS, STORE_STATIC_COLS
 
 
+# Индекс цен на продовольственные товары в ценах марта 2025
+INFLATION_COEFFICIENTS = {
+    (2023, 1): 1.2267,
+    (2023, 2): 1.2171,
+    (2023, 3): 1.2155,
+    (2023, 4): 1.2120,
+    (2023, 5): 1.2158,
+    (2023, 6): 1.2159,
+    (2023, 7): 1.2100,
+    (2023, 8): 1.2107,
+    (2023, 9): 1.2004,
+    (2023, 10): 1.1844,
+    (2023, 11): 1.1663,
+    (2023, 12): 1.1492,
+    (2024, 1): 1.1349,
+    (2024, 2): 1.1262,
+    (2024, 3): 1.1243,
+    (2024, 4): 1.1188,
+    (2024, 5): 1.1143,
+    (2024, 6): 1.1073,
+    (2024, 7): 1.1033,
+    (2024, 8): 1.1034,
+    (2024, 9): 1.0997,
+    (2024, 10): 1.0863,
+    (2024, 11): 1.0616,
+    (2024, 12): 1.0347,
+    (2025, 1): 1.0211,
+    (2025, 2): 1.0083,
+    (2025, 3): 1.0000,
+}
+
+
 def clean_outliers(df: pd.DataFrame) -> pd.DataFrame:
     """Аккуратные клиппинги без обрезки массива (теряем мало сигнала)."""
     df = df.copy()
@@ -38,6 +70,20 @@ def make_static_consistent(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def adjust_rto_for_inflation(df: pd.DataFrame) -> pd.DataFrame:
+    """Adjust РТО to March 2025 prices using inflation coefficients."""
+    df = df.copy()
+    if "rto" not in df.columns or "year" not in df.columns or "month" not in df.columns:
+        return df
+    
+    # Apply inflation coefficients
+    df["rto"] = df.apply(
+        lambda row: row["rto"] * INFLATION_COEFFICIENTS.get((row["year"], row["month"]), 1.0),
+        axis=1
+    )
+    return df
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--in_path", default="data/raw/train_2.csv")
@@ -54,6 +100,7 @@ def main():
     df = df.sort_values(["store_id", "t"]).reset_index(drop=True)
 
     df = make_static_consistent(df)
+    df = adjust_rto_for_inflation(df)
     df = clean_outliers(df)
 
     Path(args.out_path).parent.mkdir(parents=True, exist_ok=True)
