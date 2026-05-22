@@ -36,7 +36,7 @@ STORE_STATIC_COLS = [
     "marketplaces_100", "medical_300", "schools_300", "stops_300",
     "grocery_500", "p5_500", "cashboxes", "alco_flag",
 ]
-DYNAMIC_COLS = ["promo_per_check", "items_per_check", "cancellations", "work_hours"]
+DYNAMIC_COLS = ["promo_per_check", "items_per_check", "cancellations"]
 
 
 def load_raw(train_path: str | Path = "data/processed/v2.parquet") -> pd.DataFrame:
