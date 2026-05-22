@@ -4,19 +4,25 @@ seed: 2026
 target_transform: none
 use_cat: true
 save_oof: true
-mape_weights: true            # sample_weight = 1 / max(y, eps)
+mape_weights: true                       # sample_weight = 1 / max(y, eps)
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+# Веса фолдов: 2024-03 не имеет lag_24 фичей -> ставим 0 (диагностика, но в среднее не идёт)
+cv_fold_weights: [3.0, 2.0, 1.0, 0.0]
+# Использовать только надёжные фолды для оценки финального num_iters
+fold_iter_use_weights_gt: 0.5
 seed_bag: [2026, 41, 777]
 winsorize_quantile: 0.999
 params:
-  objective: regression
+  # для honest-MAPE через веса нужен L1
+  objective: regression_l1
   metric: mape
   learning_rate: 0.03
-  num_leaves: 127
-  min_data_in_leaf: 40
-  feature_fraction: 0.85
+  num_leaves: 95
+  min_data_in_leaf: 80
+  feature_fraction: 0.8
   bagging_fraction: 0.85
   bagging_freq: 1
+  lambda_l1: 0.1
   lambda_l2: 1.0
   num_boost_round: 12000
   early_stopping_rounds: 300

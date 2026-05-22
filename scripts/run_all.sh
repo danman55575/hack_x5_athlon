@@ -21,15 +21,13 @@ echo "=== XGBoost ==="
 python -m scripts.run_experiment --config configs/xgb.yaml --train $TRAIN_PATH
 echo "=== CatBoost ==="
 python -m scripts.run_experiment --config configs/catboost.yaml --train $TRAIN_PATH
-echo "=== Ridge ==="
-python -m scripts.run_experiment --config configs/linear.yaml --train $TRAIN_PATH
-echo "=== MLP ==="
-python -m scripts.run_experiment --config configs/mlp.yaml --train $TRAIN_PATH
 
 echo "=== stacking ==="
 python -m scripts.run_pipeline --stage stack
 echo "=== blending ==="
 python -m scripts.run_pipeline --stage blend
+echo "=== super blend (stack + blend) ==="
+python -m scripts.run_pipeline --stage super
 
 echo "=== REPORT ==="
 python -m scripts.compare_experiments
