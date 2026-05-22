@@ -1,2 +1,3 @@
 rank,name,model,cv_mape,cv_score,feature_count,elapsed_seconds,timestamp,submission_path
-1,ridge_log,linear,25.52122411139319,61.029093012120775,124,288.24409317970276,20260522_125258,experiments\predictions\ridge_log_20260522_125258.csv
+1,lgbm_l1_log,lightgbm,6.618177340487486,87.24829334872607,120,3038.697379589081,20260522_143358,experiments\predictions\lgbm_l1_log_20260522_143358.csv
+2,ridge_log,linear,25.52122411139319,61.029093012120775,124,288.2440931797028,20260522_125258,experiments\predictions\ridge_log_20260522_125258.csv

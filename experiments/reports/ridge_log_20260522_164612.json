@@ -1,0 +1,58 @@
+{
+  "name": "ridge_log",
+  "timestamp": "20260522_164612",
+  "model": "linear",
+  "params": {
+    "kind": "ridge",
+    "alpha": 5.0
+  },
+  "feature_count": 124,
+  "cv_folds": [
+    {
+      "fold": "2025-02",
+      "mape": 11.25627186285928,
+      "score": 78.75449283678742,
+      "n_train": 466425,
+      "n_val": 18657,
+      "best_iters": [],
+      "weight": 1.0
+    },
+    {
+      "fold": "2024-12",
+      "mape": 11.31082215440035,
+      "score": 78.65770266928402,
+      "n_train": 429111,
+      "n_val": 18657,
+      "best_iters": [],
+      "weight": 1.0
+    },
+    {
+      "fold": "2024-09",
+      "mape": 16.31805091942725,
+      "score": 70.02668601923571,
+      "n_train": 373140,
+      "n_val": 18657,
+      "best_iters": [],
+      "weight": 1.0
+    },
+    {
+      "fold": "2024-03",
+      "mape": 77.29319256079935,
+      "score": 5.155991040809378,
+      "n_train": 261198,
+      "n_val": 18657,
+      "best_iters": [],
+      "weight": 1.0
+    }
+  ],
+  "cv_mean_mape": 29.04458437437156,
+  "cv_mean_score": 58.14871814152913,
+  "cv_simple_mean_mape": 29.04458437437156,
+  "submission_path": "experiments\\predictions\\ridge_log_20260522_164612.csv",
+  "elapsed_seconds": 222.16350841522217,
+  "n_seeds": 1,
+  "final_num_iters": null,
+  "use_cat": false,
+  "mape_weights": false,
+  "target_transform": "log1p"
+}

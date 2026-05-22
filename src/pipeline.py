@@ -310,8 +310,6 @@ def _sanity_cap(df_pred_rows: pd.DataFrame, pred: np.ndarray, logger,
                 cand.append(lag1[i] * macro[i])
             if np.isfinite(naive_seasonal[i]) and naive_seasonal[i] > 0:
                 cand.append(naive_seasonal[i])
-            if np.isfinite(same_m_1y[i]) and same_m_1y[i] > 0:
-                cand.append(same_m_1y[i] * 1.12)  # +12% годовой инфляции
             if cand:
                 pred[i] = float(np.median(cand))
                 n_replaced += 1
