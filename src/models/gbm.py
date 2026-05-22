@@ -38,6 +38,8 @@ class LightGBMModel(BaseModel):
         valid_sets, valid_names = [dtrain], ["train"]
         callbacks = [lgb.log_evaluation(period=0)]
         if X_val is not None:
+            # ВАЖНО: на валидации НЕ передаём weight. metric=mape само нормирует,
+            # weighted-mape с w=1/y даёт нестандартную метрику и портит early-stopping.
             dval = lgb.Dataset(X_val, label=y_val, categorical_feature=cat_features,
                                reference=dtrain, weight=sample_weight_val)
             valid_sets.append(dval); valid_names.append("valid")
@@ -80,6 +82,8 @@ class XGBoostModel(BaseModel):
         n_rounds = params.pop("num_boost_round", 5000)
         early_stop = params.pop("early_stopping_rounds", 200)
         enable_cat = bool(cat_features)
+        # Сохраняем для predict — fit/predict гарантированно в одном режиме.
+        self._enable_categorical = enable_cat
         params["enable_categorical"] = enable_cat
         dtrain = xgb.DMatrix(X, label=y, enable_categorical=enable_cat, weight=sample_weight)
         evals = [(dtrain, "train")]
@@ -97,7 +101,9 @@ class XGBoostModel(BaseModel):
         return self
 
     def predict(self, X):
-        d = xgb.DMatrix(X, enable_categorical=True)
+        # КРИТИЧНО: используем РЕАЛЬНЫЙ режим из fit, не хардкод.
+        enable_cat = getattr(self, "_enable_categorical", False)
+        d = xgb.DMatrix(X, enable_categorical=enable_cat)
         it = getattr(self.model_, "best_iteration", None)
         if it is not None:
             return self.model_.predict(d, iteration_range=(0, it + 1))
@@ -125,6 +131,11 @@ class CatBoostModel(BaseModel):
         params = {**self.default_params, **self.params}
         if seed is not None:
             params["random_seed"] = int(seed)
+        # КРИТИЧНО: без eval_set нельзя оставлять od_* — катбуст либо ругается,
+        # либо ведёт себя неконсистентно. Чистим даже если в self.params они есть.
+        if X_val is None:
+            for k in ("od_type", "od_wait", "od_pval"):
+                params.pop(k, None)
         cat_features = cat_features or []
         train_pool = Pool(X, y, cat_features=cat_features, weight=sample_weight)
         eval_pool = (Pool(X_val, y_val, cat_features=cat_features, weight=sample_weight_val)
@@ -132,7 +143,7 @@ class CatBoostModel(BaseModel):
         self.model_ = CatBoostRegressor(**params)
         self.model_.fit(train_pool, eval_set=eval_pool,
                         use_best_model=eval_pool is not None)
-        self.best_iteration_ = self.model_.get_best_iteration() or params["iterations"]
+        self.best_iteration_ = self.model_.get_best_iteration() or params.get("iterations")
         return self
 
     def predict(self, X):

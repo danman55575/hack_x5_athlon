@@ -1,13 +1,9 @@
-"""Безутечковая фичегенерация. Все лаги/роллинги/тренды — со сдвигом shift(1).
+"""Безутечковая фичегенерация. Все лаги/роллинги/тренды со сдвигом shift(1).
 Target encoding делается отдельно out-of-fold в pipeline."""
 from __future__ import annotations
 import numpy as np
 import pandas as pd
 from .loader import CAT_COLS, DYNAMIC_COLS
-
-
-def _shifted(df, group, col, k):
-    return df.groupby(group)[col].shift(k)
 
 
 def add_lag_features(df, target="rto", lags=(1, 2, 3, 4, 5, 6, 9, 12, 13, 14, 15, 18, 24),
@@ -55,7 +51,6 @@ def add_seasonal_features(df, target="rto", group="store_id"):
     df[f"{target}_same_month_2y"] = g.shift(24)
     df[f"{target}_same_month_mean"] = df[[f"{target}_same_month_1y",
                                            f"{target}_same_month_2y"]].mean(axis=1)
-    # Прогноз "наивный сезонный": last_value * (lag12 / lag24)
     lag1 = g.shift(1)
     lag12 = g.shift(12)
     lag24 = g.shift(24)
@@ -66,7 +61,6 @@ def add_seasonal_features(df, target="rto", group="store_id"):
 
 
 def add_trend_features(df, target="rto", group="store_id"):
-    """Линейный тренд по последним n лагам (slope/intercept) для двух окон."""
     df = df.sort_values([group, "t"]).copy()
     shifted = df.groupby(group)[target].shift(1)
 
@@ -131,29 +125,35 @@ def add_calendar_features(df):
 
 
 def add_group_aggregations(df, target="rto"):
-    """Глобальные signals: средний РТО / средний YoY по region / area_cat / open_date_cat / month.
-    Все агрегации делаются по shifted значениям (только прошлое)."""
+    """Глобальные signals: средний РТО / средний YoY по region / area_cat / open_date_cat.
+    Всё считается по shifted (только прошлое)."""
     df = df.sort_values(["store_id", "t"]).copy()
-    df["rto_lag1"] = df.groupby("store_id")[target].shift(1)
-    df["rto_lag12"] = df.groupby("store_id")[target].shift(12)
+    df["_rto_lag1"]  = df.groupby("store_id")[target].shift(1)
+    df["_rto_lag12"] = df.groupby("store_id")[target].shift(12)
+    df["_rto_lag13"] = df.groupby("store_id")[target].shift(13)
 
-    # mean lag1 by (region, t) — глобальный сигнал по региону в прошлом месяце
     for key in ["region", "area_cat", "open_date_cat"]:
         if key not in df.columns:
             continue
-        # mean of rto_lag1 by (key, t) — без утечки: lag1 это уже прошлое
-        df[f"grp_{key}_lag1_mean"] = (df.groupby([key, "t"])["rto_lag1"]
+        df[f"grp_{key}_lag1_mean"] = (df.groupby([key, "t"])["_rto_lag1"]
                                        .transform("mean"))
-        df[f"grp_{key}_lag1_median"] = (df.groupby([key, "t"])["rto_lag1"]
+        df[f"grp_{key}_lag1_median"] = (df.groupby([key, "t"])["_rto_lag1"]
                                          .transform("median"))
-        # YoY-сигнал по группе
-        yoy = df["rto_lag1"] / df["rto_lag12"].replace(0, np.nan)
+        yoy = df["_rto_lag1"] / df["_rto_lag12"].replace(0, np.nan)
         df[f"grp_{key}_yoy_mean"] = yoy.groupby([df[key], df["t"]]).transform("mean")
+        df[f"grp_{key}_yoy_median"] = yoy.groupby([df[key], df["t"]]).transform("median")
 
-    # глобальный календарный sig
-    df["grp_all_lag1_mean"] = df.groupby("t")["rto_lag1"].transform("mean")
+    # ----- ГЛОБАЛЬНЫЕ макро-сигналы (восстанавливают потерянный сигнал инфляции) -----
+    # Средний lag1 / lag12 по ВСЕМ магазинам в момент t -> уровень инфляции/тренда.
+    df["grp_all_lag1_mean"]  = df.groupby("t")["_rto_lag1"].transform("mean")
+    df["grp_all_lag12_mean"] = df.groupby("t")["_rto_lag12"].transform("mean")
+    # «Безопасный» макро-YoY: (lag1 / lag13) — отношение feb-2025 к feb-2024,
+    # доступно и для марта 2025 (feb-2025 / feb-2024).
+    yoy_macro = df["_rto_lag1"] / df["_rto_lag13"].replace(0, np.nan)
+    df["grp_all_yoy_macro_mean"]   = yoy_macro.groupby(df["t"]).transform("mean")
+    df["grp_all_yoy_macro_median"] = yoy_macro.groupby(df["t"]).transform("median")
 
-    df = df.drop(columns=["rto_lag1", "rto_lag12"])
+    df = df.drop(columns=["_rto_lag1", "_rto_lag12", "_rto_lag13"])
     return df
 
 
@@ -196,7 +196,10 @@ def build_features(df: pd.DataFrame, target: str = "rto"):
     df, _ = encode_categoricals_ordinal(df)
     df = downcast(df)
 
-    drop_cols = {target, "store_id", "year"} | set(LEAKY_CURRENT_COLS)
+    # 't' исключаем из фичей. Сезонность кодируется month_sin/cos + лагами.
+    # Иначе при предсказании марта 2025 (t=26) деревья экстраполируют в неизвестность —
+    # сплиты типа "t > 24" уводят в опасные регионы пространства.
+    drop_cols = {target, "store_id", "year", "t", "month"} | set(LEAKY_CURRENT_COLS)
     feature_cols = [c for c in df.columns if c not in drop_cols]
     cat_features = [c for c in CAT_COLS if c in feature_cols]
     return df, feature_cols, cat_features

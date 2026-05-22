@@ -5,6 +5,8 @@ target_transform: log1p
 use_cat: true
 save_oof: true
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+cv_fold_weights: [3.0, 2.0, 1.0, 0.0]
+fold_iter_use_weights_gt: 0.5
 seed_bag: [2026, 41, 777]
 winsorize_quantile: 0.999
 params:
@@ -12,7 +14,7 @@ params:
   eval_metric: MAE
   learning_rate: 0.04
   depth: 7
-  l2_leaf_reg: 3.0
+  l2_leaf_reg: 4.0
   random_strength: 1.0
   iterations: 10000
   od_type: Iter

@@ -5,17 +5,19 @@ target_transform: log1p
 use_cat: false
 save_oof: true
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+cv_fold_weights: [3.0, 2.0, 1.0, 0.0]
+fold_iter_use_weights_gt: 0.5
 seed_bag: [2026, 41, 777]
 winsorize_quantile: 0.999
 params:
   objective: reg:absoluteerror
   eval_metric: mae
   learning_rate: 0.03
-  max_depth: 8
-  min_child_weight: 8
+  max_depth: 7
+  min_child_weight: 12
   subsample: 0.85
   colsample_bytree: 0.85
-  reg_lambda: 1.0
+  reg_lambda: 1.5
   reg_alpha: 0.1
   tree_method: hist
   nthread: 4

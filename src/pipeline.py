@@ -1,4 +1,11 @@
-"""Главный пайплайн с seed bagging, OOF, time-aware TE, ensemble финальной модели."""
+"""Главный пайплайн: seed bagging, OOF, time-aware TE, ensemble финальной модели.
+
+sample_weight_val на CV-фолдах всегда None (стандартная MAPE для early-stop).
+Финальный num_iters берётся ТОЛЬКО из «надёжных» фолдов (где есть lag_24-фичи),
+   определяемых через cv_fold_weights и fold_iter_use_weights_gt.
+Взвешенный CV-MAPE: фолды с весом 0 идут в лог как диагностика,
+   но не учитываются в среднем и в выборе финального числа итераций.
+"""
 from __future__ import annotations
 import time, json
 from pathlib import Path
@@ -65,7 +72,6 @@ def _maybe_weights(use_mape, y_orig):
 
 
 def _apply_num_boost_override(model_name, m_params, num_boost_override):
-    """Корректно проставляем количество итераций для каждого фреймворка."""
     if num_boost_override is None:
         return m_params
     nb = int(num_boost_override)
@@ -73,7 +79,6 @@ def _apply_num_boost_override(model_name, m_params, num_boost_override):
         m_params["num_boost_round"] = nb
         m_params.pop("early_stopping_rounds", None)
     elif model_name == "catboost":
-        # ВАЖНО: catboost-у не помогает num_boost_round, нужен iterations.
         m_params["iterations"] = nb
         m_params.pop("od_wait", None)
         m_params.pop("od_type", None)
@@ -83,9 +88,7 @@ def _apply_num_boost_override(model_name, m_params, num_boost_override):
 def _train_seed_bag(model_name, params, X_tr, y_tr, X_va, y_va,
                     cat_features, sample_weight, sample_weight_val,
                     seeds, num_boost_override=None):
-    """Тренируем модель для каждого seed, усредняем prediction."""
-    preds_val = []
-    best_iters = []
+    preds_val, best_iters = [], []
     last_model = None
     for s in seeds:
         m_params = dict(params)
@@ -126,14 +129,25 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     folds = default_folds(df_feat, val_months=cv_val_months)
     logger.info(f"Folds: {[f.name for f in folds]}")
 
+    # ----- Веса фолдов и фильтр для финального num_iters -----
+    cv_fold_weights = config.get("cv_fold_weights")
+    if cv_fold_weights is None:
+        cv_fold_weights = [1.0] * len(folds)
+    cv_fold_weights = list(cv_fold_weights)[:len(folds)]
+    while len(cv_fold_weights) < len(folds):
+        cv_fold_weights.append(1.0)
+    iter_thr = float(config.get("fold_iter_use_weights_gt", 0.5))
+    logger.info(f"Fold weights: {dict(zip([f.name for f in folds], cv_fold_weights))}")
+    logger.info(f"Iter selection threshold (fold weight > {iter_thr}) for choosing final num_iters")
+
     use_cat = config.get("use_cat", True)
     cat_features_in = cat_features if use_cat else None
 
     fold_metrics = []
-    fold_best_iters = []
+    trusted_fold_best_iters = []
     oof_pred = np.full(len(df_feat), np.nan, dtype=np.float64)
 
-    for fold in folds:
+    for fold, w in zip(folds, cv_fold_weights):
         tr_idx, va_idx = fold.split(df_feat)
         tr_mask = ~y_train_all.iloc[tr_idx].isna().values
         va_mask = ~y_train_all.iloc[va_idx].isna().values
@@ -146,7 +160,8 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         y_va_orig = df_feat.loc[va_idx, "rto"].values
 
         sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
-        sw_v = _maybe_weights(use_mape_weights, y_va_orig)
+        # КРИТИЧНО: sw_v=None всегда — standard MAPE на валидации, корректный early-stop.
+        sw_v = None
 
         pred_log_avg, best_iters, _ = _train_seed_bag(
             config["model"], config.get("params", {}),
@@ -157,13 +172,24 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         oof_pred[va_idx] = pred_orig
         fold_metrics.append({"fold": fold.name, "mape": m_val, "score": score,
                              "n_train": len(tr_idx), "n_val": len(va_idx),
-                             "best_iters": best_iters})
-        fold_best_iters.extend(best_iters)
-        logger.info(f"Fold {fold.name}: MAPE={m_val:.4f} score={score:.3f} best_iters={best_iters}")
+                             "best_iters": best_iters, "weight": float(w)})
+        if w > iter_thr:
+            trusted_fold_best_iters.extend(best_iters)
+        logger.info(f"Fold {fold.name} (w={w}): MAPE={m_val:.4f} score={score:.3f} "
+                    f"best_iters={best_iters} {'[USED FOR ITERS]' if w > iter_thr else '[DIAG ONLY]'}")
 
-    mean_mape = float(np.mean([f["mape"] for f in fold_metrics]))
-    mean_score = float(np.mean([f["score"] for f in fold_metrics]))
-    logger.info(f"CV mean MAPE = {mean_mape:.4f} | score = {mean_score:.3f}")
+    # Взвешенное среднее CV-MAPE
+    total_w = sum(f["weight"] for f in fold_metrics)
+    if total_w > 0:
+        mean_mape = float(sum(f["mape"] * f["weight"] for f in fold_metrics) / total_w)
+        mean_score = float(sum(f["score"] * f["weight"] for f in fold_metrics) / total_w)
+    else:
+        mean_mape = float(np.mean([f["mape"] for f in fold_metrics]))
+        mean_score = float(np.mean([f["score"] for f in fold_metrics]))
+    # Также репортим простое среднее для сравнимости с прошлыми экспериментами
+    simple_mean_mape = float(np.mean([f["mape"] for f in fold_metrics]))
+    logger.info(f"CV weighted MAPE = {mean_mape:.4f} | weighted score = {mean_score:.3f}")
+    logger.info(f"CV simple   MAPE = {simple_mean_mape:.4f}")
 
     # === FINAL TRAIN на всём ≤ feb-2025, predict march-2025 ===
     tr_idx, pred_idx = predict_split(df_feat, predict_year=2025, predict_month=3)
@@ -174,11 +200,17 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     X_pr = df_feat.loc[pred_idx, feat_cols]
     sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
 
-    if fold_best_iters:
-        nb_final = int(np.median(fold_best_iters) * final_iter_multiplier)
-        logger.info(f"Final num_iters = {nb_final} (median*{final_iter_multiplier})")
+    if trusted_fold_best_iters:
+        nb_final = int(np.median(trusted_fold_best_iters) * final_iter_multiplier)
+        logger.info(f"Final num_iters = {nb_final} = median({trusted_fold_best_iters}) * "
+                    f"{final_iter_multiplier}")
     else:
-        nb_final = None
+        # fallback: используем все, даже ненадёжные
+        all_iters = []
+        for f in fold_metrics:
+            all_iters.extend(f["best_iters"])
+        nb_final = int(np.median(all_iters) * final_iter_multiplier) if all_iters else None
+        logger.warning(f"No trusted folds for iter selection, fallback nb_final={nb_final}")
 
     pred_log_avg_pred = []
     last_model = None
@@ -192,6 +224,9 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         last_model = m
     pred_log_avg = np.mean(pred_log_avg_pred, axis=0)
     pred_orig = inv(pred_log_avg)
+
+    # ---- Сан-чек: ловим экстремальные выбросы, заменяем на сезонный baseline ----
+    pred_orig = _sanity_cap(df_feat.loc[pred_idx], pred_orig, logger)
 
     submission = pd.DataFrame({
         "new_id": df_feat.loc[pred_idx, "store_id"].values.astype(int),
@@ -225,11 +260,16 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         "params": config.get("params", {}),
         "feature_count": len(feat_cols),
         "cv_folds": fold_metrics,
-        "cv_mean_mape": mean_mape, "cv_mean_score": mean_score,
+        "cv_mean_mape": mean_mape,                # weighted
+        "cv_mean_score": mean_score,              # weighted
+        "cv_simple_mean_mape": simple_mean_mape,  # uniform
         "submission_path": str(sub_path),
         "elapsed_seconds": time.time() - t0,
         "n_seeds": len(seeds),
         "final_num_iters": nb_final,
+        "use_cat": use_cat,
+        "mape_weights": use_mape_weights,
+        "target_transform": target_transform,
     }
     save_json(result, Path("experiments/reports") / f"{exp_name}_{ts}.json")
     logger.info(f"Done in {result['elapsed_seconds']:.1f}s")
@@ -238,3 +278,40 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     except Exception as e:
         logger.warning(f"pickle failed: {e}")
     return result
+
+
+def _sanity_cap(df_pred_rows: pd.DataFrame, pred: np.ndarray, logger,
+                up_mul: float = 2.5, down_mul: float = 0.35) -> np.ndarray:
+    """Если предсказание выходит за разумные границы от lag1 — заменяем на «безопасный».
+    Safe = lag1 * grp_all_yoy_macro_median (если есть) или lag1 * naive_seasonal_ratio.
+    Это страховка от единичных взрывных ошибок, которые квадратично бьют по score.
+    """
+    pred = np.asarray(pred, dtype=np.float64).copy()
+    lag1 = df_pred_rows.get("rto_lag_1", pd.Series(np.nan)).values.astype(np.float64)
+    macro = df_pred_rows.get("grp_all_yoy_macro_median",
+                              pd.Series(np.nan)).values.astype(np.float64)
+    naive_seasonal = df_pred_rows.get("rto_naive_seasonal",
+                                       pd.Series(np.nan)).values.astype(np.float64)
+    same_m_1y = df_pred_rows.get("rto_same_month_1y",
+                                  pd.Series(np.nan)).values.astype(np.float64)
+
+    n_replaced = 0
+    for i in range(len(pred)):
+        if not np.isfinite(lag1[i]) or lag1[i] <= 0:
+            continue
+        ratio = pred[i] / lag1[i]
+        if ratio > up_mul or ratio < down_mul:
+            # выбираем безопасный fallback
+            cand = []
+            if np.isfinite(macro[i]) and macro[i] > 0:
+                cand.append(lag1[i] * macro[i])
+            if np.isfinite(naive_seasonal[i]) and naive_seasonal[i] > 0:
+                cand.append(naive_seasonal[i])
+            if np.isfinite(same_m_1y[i]) and same_m_1y[i] > 0:
+                cand.append(same_m_1y[i] * 1.12)  # +12% годовой инфляции
+            if cand:
+                pred[i] = float(np.median(cand))
+                n_replaced += 1
+    if n_replaced > 0:
+        logger.info(f"Sanity cap: replaced {n_replaced} extreme predictions with safe fallback")
+    return pred
