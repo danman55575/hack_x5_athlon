@@ -40,13 +40,35 @@ def clean_outliers(df: pd.DataFrame) -> pd.DataFrame:
         df["work_hours"] = df["work_hours"].clip(lower=5, upper=25).astype(np.float32)
     for col in ["medical_300", "stops_300", "grocery_500", "schools_300",
                 "marketplaces_100", "foot_traffic", "car_traffic",
-                "cancellations"]:
+                "cancellations"]: # возможно cancellations стоит оставить
         if col not in df.columns:
             continue
         q = df[col].quantile(0.995)
         df[f"{col}_clipped"] = df[col].clip(upper=q).astype(np.float32)
     return df
 
+def correct_population(df: pd.DataFrame) -> pd.DataFrame:
+    """Меняет население в паре (город, region) на медиану населения по его значениям 
+    (отбрасывая предварительно нулевые значения)"""
+    df = df.copy()
+    population_medians = df.groupby(['locality', 'region']).apply(
+        lambda x: x[x['population'] != 0]['population'].median()
+    ).reset_index()
+    population_medians.columns = ['locality', 'region', 'Median_Population']
+    population_medians.fillna(100, inplace=True)
+
+    # Create a mapping dictionary from (city, region) to median population
+    population_mapping = dict(zip(
+        zip(population_medians['locality'], population_medians['region']),
+        population_medians['Median_Population']
+    ))
+
+    # Replace population values
+    df['population'] = df.apply(
+        lambda row: population_mapping.get((row['locality'], row['region']), row['population']),
+        axis=1
+    )
+    return df
 
 def make_static_consistent(df: pd.DataFrame) -> pd.DataFrame:
     """Применяется только к truly-static категориальным колонкам.
@@ -89,6 +111,7 @@ def main():
 
     df = make_static_consistent(df)
     df = adjust_rto_for_inflation(df)
+    df = correct_population(df)
     df = clean_outliers(df)
 
     Path(args.out_path).parent.mkdir(parents=True, exist_ok=True)
