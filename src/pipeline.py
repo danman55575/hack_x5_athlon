@@ -31,20 +31,18 @@ def get_model(name, params=None):
 def _prepare(train_path, target_transform, winsorize_quantile):
     df = load_raw(train_path)
     df = add_target_row_for_march_2025(df)
-    # TE до ordinal-кодирования (нужны исходные строки категорий)
     df = add_target_encodings(df, target="rto")
     df_feat, feat_cols, cat_features = build_features(df, target="rto")
     df_feat = df_feat.reset_index(drop=True)
 
-    # ETS pred (если сохранён в кэше)
     ets_path = Path("data/processed/ets_features.parquet")
     if ets_path.exists():
         ets = pd.read_parquet(ets_path)
         df_feat = df_feat.merge(ets, on=["store_id", "t"], how="left")
+        df_feat = df_feat.reset_index(drop=True)
         if "ets_pred" in df_feat.columns and "ets_pred" not in feat_cols:
             feat_cols.append("ets_pred")
 
-    # Winsorize таргета только для train (val/test не трогаем)
     cap = df_feat["rto"].quantile(winsorize_quantile)
     df_feat["_rto_train"] = df_feat["rto"].clip(upper=cap)
 
@@ -66,6 +64,22 @@ def _maybe_weights(use_mape, y_orig):
     return w.astype(np.float64)
 
 
+def _apply_num_boost_override(model_name, m_params, num_boost_override):
+    """Корректно проставляем количество итераций для каждого фреймворка."""
+    if num_boost_override is None:
+        return m_params
+    nb = int(num_boost_override)
+    if model_name in ("lightgbm", "xgboost"):
+        m_params["num_boost_round"] = nb
+        m_params.pop("early_stopping_rounds", None)
+    elif model_name == "catboost":
+        # ВАЖНО: catboost-у не помогает num_boost_round, нужен iterations.
+        m_params["iterations"] = nb
+        m_params.pop("od_wait", None)
+        m_params.pop("od_type", None)
+    return m_params
+
+
 def _train_seed_bag(model_name, params, X_tr, y_tr, X_va, y_va,
                     cat_features, sample_weight, sample_weight_val,
                     seeds, num_boost_override=None):
@@ -75,9 +89,7 @@ def _train_seed_bag(model_name, params, X_tr, y_tr, X_va, y_va,
     last_model = None
     for s in seeds:
         m_params = dict(params)
-        if num_boost_override is not None:
-            m_params["num_boost_round"] = int(num_boost_override)
-            m_params.pop("early_stopping_rounds", None)
+        m_params = _apply_num_boost_override(model_name, m_params, num_boost_override)
         m = get_model(model_name, m_params)
         m.fit(X_tr, y_tr, X_va, y_va, cat_features=cat_features,
               sample_weight=sample_weight, sample_weight_val=sample_weight_val, seed=s)
@@ -102,6 +114,7 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     winsorize_q = config.get("winsorize_quantile", 1.0)
     use_mape_weights = bool(config.get("mape_weights", False))
     seeds = config.get("seed_bag", [config.get("seed", 2026)])
+    final_iter_multiplier = float(config.get("final_iter_multiplier", 1.15))
 
     df_feat, feat_cols, cat_features, y_train_all, inv = _prepare(
         train_path, target_transform, winsorize_q)
@@ -139,14 +152,14 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
             config["model"], config.get("params", {}),
             X_tr, y_tr, X_va, y_va_log, cat_features_in, sw, sw_v, seeds)
         pred_orig = inv(pred_log_avg)
-        m = mape(y_va_orig, pred_orig)
-        score = mape_to_score(m)
+        m_val = mape(y_va_orig, pred_orig)
+        score = mape_to_score(m_val)
         oof_pred[va_idx] = pred_orig
-        fold_metrics.append({"fold": fold.name, "mape": m, "score": score,
+        fold_metrics.append({"fold": fold.name, "mape": m_val, "score": score,
                              "n_train": len(tr_idx), "n_val": len(va_idx),
                              "best_iters": best_iters})
         fold_best_iters.extend(best_iters)
-        logger.info(f"Fold {fold.name}: MAPE={m:.4f} score={score:.3f} best_iters={best_iters}")
+        logger.info(f"Fold {fold.name}: MAPE={m_val:.4f} score={score:.3f} best_iters={best_iters}")
 
     mean_mape = float(np.mean([f["mape"] for f in fold_metrics]))
     mean_score = float(np.mean([f["score"] for f in fold_metrics]))
@@ -161,17 +174,23 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     X_pr = df_feat.loc[pred_idx, feat_cols]
     sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
 
-    # Подбираем num_boost из best_iters (медиана * 1.1)
     if fold_best_iters:
-        nb_final = int(np.median(fold_best_iters) * 1.10)
-        logger.info(f"Final num_boost_round = {nb_final}")
+        nb_final = int(np.median(fold_best_iters) * final_iter_multiplier)
+        logger.info(f"Final num_iters = {nb_final} (median*{final_iter_multiplier})")
     else:
         nb_final = None
 
-    pred_log_avg, _, last_model = _train_seed_bag(
-        config["model"], config.get("params", {}),
-        X_tr, y_tr, None, None, cat_features_in, sw, None, seeds,
-        num_boost_override=nb_final)
+    pred_log_avg_pred = []
+    last_model = None
+    for s in seeds:
+        m_params = dict(config.get("params", {}))
+        m_params = _apply_num_boost_override(config["model"], m_params, nb_final)
+        m = get_model(config["model"], m_params)
+        m.fit(X_tr, y_tr, None, None, cat_features=cat_features_in,
+              sample_weight=sw, sample_weight_val=None, seed=s)
+        pred_log_avg_pred.append(m.predict(X_pr))
+        last_model = m
+    pred_log_avg = np.mean(pred_log_avg_pred, axis=0)
     pred_orig = inv(pred_log_avg)
 
     submission = pd.DataFrame({
@@ -210,6 +229,7 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         "submission_path": str(sub_path),
         "elapsed_seconds": time.time() - t0,
         "n_seeds": len(seeds),
+        "final_num_iters": nb_final,
     }
     save_json(result, Path("experiments/reports") / f"{exp_name}_{ts}.json")
     logger.info(f"Done in {result['elapsed_seconds']:.1f}s")
