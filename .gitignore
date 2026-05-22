@@ -13,3 +13,4 @@ experiments/predictions/*
 *.log
 .DS_Store
 catboost_info
+data
