@@ -6,13 +6,15 @@ Target encoding делается отдельно out-of-fold в pipeline.
   а в марте 31, что даёт ~10.7% разницу в РТО только за счёт длины месяца).
 - Добавлены rto_lag_1_per_day, rto_lag_12_per_day, rto_lag_1_scaled_by_days
   (day-adjusted naive forecasts).
-- Добавлены days_in_month_lag_1, days_in_month_lag_12, days_ratio_curr_to_lag*.
+- Добавлены days_in_month_lag_1, days_ratio_curr_to_lag*.
 """
 from __future__ import annotations
 import numpy as np
 import pandas as pd
 from .loader import CAT_COLS, DYNAMIC_COLS
 
+# ---------- DAYS-IN-MONTH ----------
+_DAYS_IN_MONTH_BASE = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=np.int8)
 
 def add_lag_features(df, target="rto", lags=(1, 2, 3, 6, 7, 9, 10, 12, 13, 15, 16, 24, 25),
                      group="store_id"):
@@ -120,9 +122,6 @@ def add_dynamic_lags(df, group="store_id"):
     return df
 
 
-# ---------- DAYS-IN-MONTH ----------
-_DAYS_IN_MONTH_BASE = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=np.int8)
-
 
 def _is_leap_year(year: int) -> bool:
     return (year % 4 == 0) and (year % 100 != 0 or year % 400 == 0)
@@ -160,12 +159,8 @@ def add_days_features(df, target="rto", group="store_id"):
 
     g_dim = df.groupby(group)["days_in_month"]
     df["days_in_month_lag_1"]  = g_dim.shift(1).astype(np.float32)
-    df["days_in_month_lag_12"] = g_dim.shift(12).astype(np.float32)
     df["days_ratio_curr_to_lag1"] = (
         df["days_in_month"].astype(np.float32) / df["days_in_month_lag_1"].replace(0, np.nan)
-    ).astype(np.float32)
-    df["days_ratio_curr_to_lag12"] = (
-        df["days_in_month"].astype(np.float32) / df["days_in_month_lag_12"].replace(0, np.nan)
     ).astype(np.float32)
 
     if f"{target}_lag_1" in df.columns:
@@ -178,11 +173,11 @@ def add_days_features(df, target="rto", group="store_id"):
         ).astype(np.float32)
     if f"{target}_lag_12" in df.columns:
         df[f"{target}_lag_12_per_day"] = (
-            df[f"{target}_lag_12"] / df["days_in_month_lag_12"].replace(0, np.nan)
+            df[f"{target}_lag_12"] / df["days_in_month"].replace(0, np.nan)
         ).astype(np.float32)
     if f"{target}_same_month_1y" in df.columns:
         df[f"{target}_same_month_1y_per_day"] = (
-            df[f"{target}_same_month_1y"] / df["days_in_month_lag_12"].replace(0, np.nan)
+            df[f"{target}_same_month_1y"] / df["days_in_month"].replace(0, np.nan)
         ).astype(np.float32)
     # Per-day-adjusted YoY: (lag1/days_lag1) / (lag12/days_lag12)
     if f"{target}_lag_1_per_day" in df.columns and f"{target}_lag_12_per_day" in df.columns:
@@ -193,6 +188,9 @@ def add_days_features(df, target="rto", group="store_id"):
 
 
 def add_group_aggregations(df, target="rto"):
+    df = df.copy()
+    original_index = df.index
+    
     df["_rto_lag1"]  = df.groupby("store_id")[target].shift(1)
     df["_rto_lag12"] = df.groupby("store_id")[target].shift(12)
     df["_rto_lag13"] = df.groupby("store_id")[target].shift(13)
@@ -270,7 +268,7 @@ def build_features(df: pd.DataFrame, target: str = "rto"):
     df, _ = encode_categoricals_ordinal(df)
     df = downcast(df)
 
-    drop_cols = {target, "store_id", "year", "t", "month"} | set(LEAKY_CURRENT_COLS)
+    drop_cols = {target, "store_id", "year", "t", "month"} | set(DYNAMIC_COLS)
     feature_cols = [c for c in df.columns if c not in drop_cols]
     cat_features = [c for c in CAT_COLS if c in feature_cols]
     return df, feature_cols, cat_features
