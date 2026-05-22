@@ -1,5 +1,10 @@
-"""KFold target encoding по time-aware схеме: для каждой строки кодируем категорию
-средним таргета по строкам с t < текущего t (expanding mean) — без утечки."""
+"""KFold target encoding по time-aware схеме.
+
+Изменение vs предыдущей версии: устранена микро-утечка через global_mean.
+Раньше smoothing prior считался как mean(target) по ВСЕМУ датасету, включая
+будущие периоды. Теперь prior сам по себе time-aware: для каждого t используется
+cumulative mean по строкам с t' < t.
+"""
 from __future__ import annotations
 import numpy as np
 import pandas as pd
@@ -8,21 +13,33 @@ import pandas as pd
 def expanding_target_encode(df: pd.DataFrame, cat_col: str, target: str = "rto",
                             min_samples: int = 30, smoothing: float = 50.0,
                             time_col: str = "t") -> np.ndarray:
-    """Для каждой строки возвращает (среднее по cat_col по записям с t' < t),
-    сглаженное к глобальному среднему. Полностью без утечки.
+    """Возвращает row-level TE строго в исходном порядке df.
 
-    ВАЖНО: возвращаемый массив строго соответствует ИСХОДНОМУ порядку строк df,
-    переданному вызывающим кодом.
+    Smoothing prior — это глобальное среднее target по строкам с t' < t (без утечки).
+    Категорный mean — expanding по t (без утечки).
     """
-    # 1. Сохраняем исходный порядок ДО любых сортировок.
     df = df.copy()
     df["_orig_idx"] = np.arange(len(df), dtype=np.int64)
 
-    # 2. Глобальное среднее (используется для smoothing и для fallback).
-    global_mean = float(df[target].mean())
+    # ---------- TIME-AWARE GLOBAL PRIOR (без утечки) ----------
+    t_agg = (df.groupby(time_col)[target]
+             .agg(["sum", "count"])
+             .reset_index()
+             .sort_values(time_col))
+    t_agg["sum"] = t_agg["sum"].fillna(0.0)
+    t_agg["count"] = t_agg["count"].fillna(0).astype(np.int64)
+    # cumsum().shift(1) = накопление СТРОГО до текущего t (исключая сам t)
+    t_agg["cum_sum"] = t_agg["sum"].cumsum().shift(1, fill_value=0.0)
+    t_agg["cum_cnt"] = t_agg["count"].cumsum().shift(1, fill_value=0).astype(np.int64)
+    overall_mean = float(df[target].dropna().mean()) if df[target].notna().any() else 0.0
+    t_agg["prior"] = np.where(
+        t_agg["cum_cnt"] > 0,
+        t_agg["cum_sum"] / np.maximum(t_agg["cum_cnt"], 1),
+        overall_mean,
+    )
+    prior_by_t = dict(zip(t_agg[time_col].values, t_agg["prior"].values.astype(np.float64)))
 
-    # 3. Делаем sum/count по (cat, t), затем cumsum по cat, ПРЕДВАРИТЕЛЬНО
-    # отсортировав по времени, чтобы cumsum шёл хронологически.
+    # ---------- PER-CATEGORY EXPANDING MEAN ----------
     grouped = (df.groupby([cat_col, time_col], dropna=False)[target]
                  .agg(["sum", "count"])
                  .reset_index()
@@ -31,21 +48,21 @@ def expanding_target_encode(df: pd.DataFrame, cat_col: str, target: str = "rto",
     grouped["count"] = grouped["count"].fillna(0).astype(np.int64)
     grouped["cum_sum"] = grouped.groupby(cat_col)["sum"].cumsum() - grouped["sum"]
     grouped["cum_cnt"] = grouped.groupby(cat_col)["count"].cumsum() - grouped["count"]
-    grouped["te"] = (grouped["cum_sum"] + smoothing * global_mean) / (grouped["cum_cnt"] + smoothing)
-    grouped.loc[grouped["cum_cnt"] < min_samples, "te"] = global_mean
+    grouped["prior"] = grouped[time_col].map(prior_by_t).astype(np.float64)
+    grouped["prior"] = grouped["prior"].fillna(overall_mean)
+    grouped["te"] = (grouped["cum_sum"] + smoothing * grouped["prior"]) / (grouped["cum_cnt"] + smoothing)
+    low_mask = grouped["cum_cnt"] < min_samples
+    grouped.loc[low_mask, "te"] = grouped.loc[low_mask, "prior"]
 
-    # 4. Merge и восстановление исходного порядка.
     out = df.merge(grouped[[cat_col, time_col, "te"]], on=[cat_col, time_col], how="left")
     out = out.sort_values("_orig_idx", kind="stable")
     te = out["te"].astype(np.float32).values
-    # Если по какой-то причине осталась NaN (например в (cat,t), которой нет в grouped) — глобальное среднее
-    te = np.where(np.isnan(te), np.float32(global_mean), te)
+    te = np.where(np.isnan(te), np.float32(overall_mean), te)
     return te
 
 
 def add_target_encodings(df: pd.DataFrame, target: str = "rto",
                          cat_cols=("region", "locality", "open_date_cat", "area_cat")) -> pd.DataFrame:
-    """Добавляет TE-фичи. Только row-level, time-aware. Train + test строки покрыты."""
     df = df.copy()
     for col in cat_cols:
         if col not in df.columns:
@@ -59,7 +76,6 @@ def add_target_encodings(df: pd.DataFrame, target: str = "rto",
         df["_area_open"] = df["area_cat"].astype(str) + "_" + df["open_date_cat"].astype(str)
         df["te_area_open"] = expanding_target_encode(df, "_area_open", target=target)
         df = df.drop(columns=["_area_open"])
-    # Дополнительный полезный сигнал: TE по region+area_cat
     if {"region", "area_cat"}.issubset(df.columns):
         df["_region_area"] = df["region"].astype(str) + "_" + df["area_cat"].astype(str)
         df["te_region_area"] = expanding_target_encode(df, "_region_area", target=target)
