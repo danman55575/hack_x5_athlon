@@ -5,9 +5,9 @@ target_transform: log1p
 use_cat: true
 save_oof: true
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
-cv_fold_weights: [3.0, 2.0, 1.0, 0.0]   # 2024-03 диагностика, не учитывается
+cv_fold_weights: [3.0, 2.0, 1.0, 3.0]   # 2024-03 диагностика, не учитывается
 fold_iter_use_weights_gt: 0.5
-seed_bag: [2026, 41, 777]
+seed_bag: [2026]
 winsorize_quantile: 0.999
 params:
   objective: regression_l1

@@ -60,6 +60,7 @@ def save_best_models(rows: list[dict], out_path: str | Path = "experiments/repor
     df_top_10 = df_all.head(10).copy()
     
     # Add rank
+    df_top_10.drop(columns=['rank'], inplace=True)
     df_top_10.insert(0, 'rank', range(1, len(df_top_10) + 1))
     
     # Save to CSV

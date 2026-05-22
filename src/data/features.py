@@ -6,9 +6,9 @@ import pandas as pd
 from .loader import CAT_COLS, DYNAMIC_COLS
 
 
-def add_lag_features(df, target="rto", lags=(1, 2, 3, 4, 5, 6, 9, 12, 13, 14, 15, 18, 24),
+def add_lag_features(df, target="rto", lags=(1, 2, 3, 6, 7, 9, 10, 12, 13, 15, 16, 24, 25),
                      group="store_id"):
-    df = df.sort_values([group, "t"]).copy()
+    # Assume df is already sorted by (group, t) and copied
     g = df.groupby(group)[target]
     for L in lags:
         df[f"{target}_lag_{L}"] = g.shift(L)
@@ -16,7 +16,7 @@ def add_lag_features(df, target="rto", lags=(1, 2, 3, 4, 5, 6, 9, 12, 13, 14, 15
 
 
 def add_rolling_features(df, target="rto", windows=(3, 6, 12, 24), group="store_id"):
-    df = df.sort_values([group, "t"]).copy()
+    # Assume df is already sorted by (group, t) and copied
     shifted = df.groupby(group)[target].shift(1)
     for w in windows:
         roll = shifted.groupby(df[group]).rolling(window=w, min_periods=max(2, w // 3))
@@ -29,7 +29,7 @@ def add_rolling_features(df, target="rto", windows=(3, 6, 12, 24), group="store_
 
 
 def add_diff_features(df, target="rto", group="store_id"):
-    df = df.sort_values([group, "t"]).copy()
+    # Assume df is already sorted by (group, t) and copied
     g = df.groupby(group)[target]
     lag1, lag2, lag3, lag6, lag12 = g.shift(1), g.shift(2), g.shift(3), g.shift(6), g.shift(12)
     df[f"{target}_diff_1"] = lag1 - lag2
@@ -45,7 +45,7 @@ def add_diff_features(df, target="rto", group="store_id"):
 
 
 def add_seasonal_features(df, target="rto", group="store_id"):
-    df = df.sort_values([group, "t"]).copy()
+    # Assume df is already sorted by (group, t) and copied
     g = df.groupby(group)[target]
     df[f"{target}_same_month_1y"] = g.shift(12)
     df[f"{target}_same_month_2y"] = g.shift(24)
@@ -61,28 +61,38 @@ def add_seasonal_features(df, target="rto", group="store_id"):
 
 
 def add_trend_features(df, target="rto", group="store_id"):
-    df = df.sort_values([group, "t"]).copy()
+    # Assume df is already sorted by (group, t) and copied
     shifted = df.groupby(group)[target].shift(1)
 
-    def _slope(arr):
+    def _slope_numba(arr):
+        """Compute linear regression slope - optimized for small windows."""
         a = np.asarray(arr, dtype=np.float64)
-        a = a[~np.isnan(a)]
-        if len(a) < 3:
+        valid = ~np.isnan(a)
+        a = a[valid]
+        n = len(a)
+        if n < 3:
             return np.nan
-        x = np.arange(len(a))
-        return float(np.polyfit(x, a, 1)[0])
+        # Fast numpy computation without polyfit overhead
+        x = np.arange(n, dtype=np.float64)
+        x_mean = x.mean()
+        y_mean = a.mean()
+        numerator = ((x - x_mean) * (a - y_mean)).sum()
+        denominator = ((x - x_mean) ** 2).sum()
+        return numerator / denominator if denominator != 0 else np.nan
 
     for w in (3, 6, 12):
+        # Use rolling apply but with optimized slope function
         s = (shifted.groupby(df[group])
              .rolling(window=w, min_periods=3)
-             .apply(_slope, raw=False)
+             .apply(_slope_numba, raw=False)
              .reset_index(level=0, drop=True))
         df[f"{target}_slope_{w}"] = s
+    
     return df
 
 
 def add_expanding_stats(df, target="rto", group="store_id"):
-    df = df.sort_values([group, "t"]).copy()
+    # Assume df is already sorted by (group, t) and copied
     shifted = df.groupby(group)[target].shift(1)
     grp = shifted.groupby(df[group]).expanding()
     df[f"{target}_cummean"] = grp.mean().reset_index(level=0, drop=True)
@@ -95,7 +105,7 @@ def add_expanding_stats(df, target="rto", group="store_id"):
 
 
 def add_dynamic_lags(df, group="store_id"):
-    df = df.sort_values([group, "t"]).copy()
+    # Assume df is already sorted by (group, t) and copied
     for col in DYNAMIC_COLS:
         if col not in df.columns:
             continue
@@ -113,7 +123,7 @@ def add_dynamic_lags(df, group="store_id"):
 
 
 def add_calendar_features(df):
-    df = df.copy()
+    # Assume df is already sorted and copied
     df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12).astype(np.float32)
     df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12).astype(np.float32)
     df["is_jan"]    = (df["month"] == 1).astype(np.int8)
@@ -127,7 +137,7 @@ def add_calendar_features(df):
 def add_group_aggregations(df, target="rto"):
     """Глобальные signals: средний РТО / средний YoY по region / area_cat / open_date_cat.
     Всё считается по shifted (только прошлое)."""
-    df = df.sort_values(["store_id", "t"]).copy()
+    # Assume df is already sorted by (store_id, t) and copied
     df["_rto_lag1"]  = df.groupby("store_id")[target].shift(1)
     df["_rto_lag12"] = df.groupby("store_id")[target].shift(12)
     df["_rto_lag13"] = df.groupby("store_id")[target].shift(13)
@@ -144,6 +154,9 @@ def add_group_aggregations(df, target="rto"):
         df[f"grp_{key}_yoy_median"] = yoy.groupby([df[key], df["t"]]).transform("median")
 
     # ----- ГЛОБАЛЬНЫЕ макро-сигналы (восстанавливают потерянный сигнал инфляции) -----
+    # Defragment DataFrame before adding many global aggregation columns
+    df = df.copy()
+    
     # Средний lag1 / lag12 по ВСЕМ магазинам в момент t -> уровень инфляции/тренда.
     df["grp_all_lag1_mean"]  = df.groupby("t")["_rto_lag1"].transform("mean")
     df["grp_all_lag12_mean"] = df.groupby("t")["_rto_lag12"].transform("mean")
@@ -152,13 +165,14 @@ def add_group_aggregations(df, target="rto"):
     yoy_macro = df["_rto_lag1"] / df["_rto_lag13"].replace(0, np.nan)
     df["grp_all_yoy_macro_mean"]   = yoy_macro.groupby(df["t"]).transform("mean")
     df["grp_all_yoy_macro_median"] = yoy_macro.groupby(df["t"]).transform("median")
-
+    
     df = df.drop(columns=["_rto_lag1", "_rto_lag12", "_rto_lag13"])
+    df = df.copy()
     return df
 
 
 def encode_categoricals_ordinal(df, cat_cols=CAT_COLS):
-    df = df.copy()
+    # df is already copied in build_features, no need to copy again
     mappings = {}
     for c in cat_cols:
         if c not in df.columns:
@@ -170,6 +184,7 @@ def encode_categoricals_ordinal(df, cat_cols=CAT_COLS):
 
 
 def downcast(df):
+    # Assume df is already copied if needed
     for c in df.select_dtypes(include="float64").columns:
         df[c] = df[c].astype(np.float32)
     for c in df.select_dtypes(include="int64").columns:
@@ -184,6 +199,9 @@ LEAKY_CURRENT_COLS = ["promo_per_check", "items_per_check", "cancellations", "wo
 
 
 def build_features(df: pd.DataFrame, target: str = "rto"):
+    # Sort and copy ONCE at the start, then reuse for all feature functions
+    df = df.sort_values(["store_id", "t"]).copy()
+    
     df = add_lag_features(df, target=target)
     df = add_rolling_features(df, target=target)
     df = add_diff_features(df, target=target)

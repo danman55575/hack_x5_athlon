@@ -50,6 +50,9 @@ def _prepare(train_path, target_transform, winsorize_quantile):
         if "ets_pred" in df_feat.columns and "ets_pred" not in feat_cols:
             feat_cols.append("ets_pred")
 
+    # Defragment DataFrame before adding new columns to avoid PerformanceWarning
+    df_feat = df_feat.copy()
+
     cap = df_feat["rto"].quantile(winsorize_quantile)
     df_feat["_rto_train"] = df_feat["rto"].clip(upper=cap)
 
