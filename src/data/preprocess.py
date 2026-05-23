@@ -82,7 +82,8 @@ def make_static_consistent(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def adjust_rto_for_inflation(df: pd.DataFrame) -> pd.DataFrame:
+def adjust_rto_for_inflation(df: pd.DataFrame, 
+                             inflation_file="../data/processed/inflation_coefficients.csv") -> pd.DataFrame:
     """Adjust РТО to March 2025 prices using inflation coefficients."""
     df = df.copy()
     if "rto" not in df.columns or "year" not in df.columns or "month" not in df.columns:

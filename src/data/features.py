@@ -16,6 +16,24 @@ from .loader import CAT_COLS, DYNAMIC_COLS
 # ---------- DAYS-IN-MONTH ----------
 _DAYS_IN_MONTH_BASE = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=np.int8)
 
+
+def add_region_spendings(df, spendings_file="../data/processed/region_spendings_inflated.csv"):
+    """
+    Добавляет в df колонку 'region_spendings_inflated' с расходами на продовольствие
+    по региону на соответствующий месяц и год (с учётом инфляции).
+    """
+    spendings_df = pd.read_csv(spendings_file)
+
+    # Выполняем left join
+    df = df.merge(
+        spendings_df[['year', 'month', 'region', 'region_spendings_inflated']],
+        on=['year', 'month', 'region'],
+        how='left'
+    )
+
+    return df
+
+
 def add_lag_features(df, target="rto", lags=(1, 2, 3, 6, 7, 9, 10, 12, 13, 15, 16, 24, 25),
                      group="store_id"):
     g = df.groupby(group)[target]
@@ -255,6 +273,7 @@ def downcast(df):
 def build_features(df: pd.DataFrame, target: str = "rto"):
     df = df.sort_values(["store_id", "t"]).copy()
 
+    df = add_region_spendings(df)
     df = add_lag_features(df, target=target)
     df = add_rolling_features(df, target=target)
     df = add_diff_features(df, target=target)
