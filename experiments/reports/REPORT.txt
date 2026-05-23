@@ -1,0 +1,65 @@
+==============================================================================================================
+  HACKATHON RTO — EXPERIMENT REPORT — generated at 2026-05-23 16:54:32
+==============================================================================================================
+  Total experiments: 5
+
+Rank  Name                                Model           CV MAPE   CV Score  Feats   Time(s)
+--------------------------------------------------------------------------------------------------------------
+1     lgbm_l1_log                         lightgbm         4.4269     91.345    135   11620.8
+2     lgbm_l1_log                         lightgbm         4.5374     91.132    136    1840.8
+3     lgbm_l1_log                         lightgbm         4.8199     90.596    125    3627.7
+4     ridge_log                           linear          29.0446     58.149    124     222.2
+5     ridge_log                           linear          29.0732     58.098    124     277.3
+
+==============================================================================================================
+  PER-FOLD DETAILS
+==============================================================================================================
+
+[lgbm_l1_log] model=lightgbm ts=20260523_141305
+  params: {"objective": "regression_l1", "metric": "mae", "learning_rate": 0.03, "num_leaves": 95, "min_data_in_leaf": 80, "feature_fraction": 0.8, "bagging_fraction": 0.85, "bagging_freq": 1, "lambda_l1": 0.1, "lambda_l2": 1.5, "num_boost_round": 12000, "early_stopping_rounds": 300, "num_threads": 4, "verbose": -1}
+  CV mean MAPE: 4.4269  |  Score: 91.345
+  ★ Rank: #1 overall
+    fold 2025-02  MAPE=4.7178 score=90.787 n_train=466425 n_val=18657
+    fold 2024-12  MAPE=3.6592 score=92.815 n_train=429111 n_val=18657
+    fold 2024-09  MAPE=5.0895 score=90.080 n_train=373140 n_val=18657
+    fold 2024-03  MAPE=5.2193 score=89.834 n_train=261198 n_val=18657
+  submission: experiments\predictions\lgbm_l1_log_20260523_141305.csv
+
+[lgbm_l1_log] model=lightgbm ts=20260523_165430
+  params: {"objective": "regression_l1", "metric": "mae", "learning_rate": 0.03, "num_leaves": 95, "min_data_in_leaf": 80, "feature_fraction": 0.8, "bagging_fraction": 0.85, "bagging_freq": 1, "lambda_l1": 0.1, "lambda_l2": 1.5, "num_boost_round": 12000, "early_stopping_rounds": 300, "num_threads": 4, "verbose": -1}
+  CV mean MAPE: 4.5374  |  Score: 91.132
+  ★ Rank: #1 overall
+    fold 2025-02  MAPE=4.6063 score=91.000 n_train=466425 n_val=18657
+    fold 2024-12  MAPE=4.1457 score=91.881 n_train=429111 n_val=18657
+    fold 2024-09  MAPE=5.1139 score=90.034 n_train=373140 n_val=18657
+  submission: experiments\predictions\lgbm_l1_log_20260523_165430.csv
+
+[lgbm_l1_log] model=lightgbm ts=20260522_214946
+  params: {"objective": "regression_l1", "metric": "mae", "learning_rate": 0.03, "num_leaves": 95, "min_data_in_leaf": 80, "feature_fraction": 0.8, "bagging_fraction": 0.85, "bagging_freq": 1, "lambda_l1": 0.1, "lambda_l2": 1.5, "num_boost_round": 12000, "early_stopping_rounds": 300, "num_threads": 4, "verbose": -1}
+  CV mean MAPE: 4.8199  |  Score: 90.596
+  ★ Rank: #1 overall
+    fold 2025-02  MAPE=5.3705 score=89.547 n_train=466425 n_val=18657
+    fold 2024-12  MAPE=4.0431 score=92.077 n_train=429111 n_val=18657
+    fold 2024-09  MAPE=4.7216 score=90.780 n_train=373140 n_val=18657
+    fold 2024-03  MAPE=8.0167 score=84.609 n_train=261198 n_val=18657
+  submission: experiments\predictions\lgbm_l1_log_20260522_214946.csv
+
+[ridge_log] model=linear ts=20260522_164612
+  params: {"kind": "ridge", "alpha": 5.0}
+  CV mean MAPE: 29.0446  |  Score: 58.149
+  ★ Rank: #2 overall
+    fold 2025-02  MAPE=11.2563 score=78.754 n_train=466425 n_val=18657
+    fold 2024-12  MAPE=11.3108 score=78.658 n_train=429111 n_val=18657
+    fold 2024-09  MAPE=16.3181 score=70.027 n_train=373140 n_val=18657
+    fold 2024-03  MAPE=77.2932 score=5.156 n_train=261198 n_val=18657
+  submission: experiments\predictions\ridge_log_20260522_164612.csv
+
+[ridge_log] model=linear ts=20260522_163927
+  params: {"kind": "ridge", "alpha": 5.0}
+  CV mean MAPE: 29.0732  |  Score: 58.098
+  ★ Rank: #2 overall
+    fold 2025-02  MAPE=11.3703 score=78.552 n_train=466425 n_val=18657
+    fold 2024-12  MAPE=11.3108 score=78.658 n_train=429111 n_val=18657
+    fold 2024-09  MAPE=16.3180 score=70.027 n_train=373140 n_val=18657
+    fold 2024-03  MAPE=77.2935 score=5.156 n_train=261198 n_val=18657
+  submission: experiments\predictions\ridge_log_20260522_163927.csv

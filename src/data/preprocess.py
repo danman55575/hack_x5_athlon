@@ -69,14 +69,29 @@ def make_static_consistent(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def adjust_rto_for_inflation(df: pd.DataFrame) -> pd.DataFrame:
-    """Adjust РТО to March 2025 prices using inflation coefficients."""
+def adjust_rto_for_inflation(df: pd.DataFrame,
+                             inflation_file="data/processed/inflation_coefficients.csv") -> pd.DataFrame:
+    """
+    Adjust РТО to March 2025 prices using inflation coefficients.
+    """
     df = df.copy()
-    if "rto" not in df.columns or "year" not in df.columns or "month" not in df.columns:
+    required_cols = ['year', 'month', 'rto']
+    if not all(col in df.columns for col in required_cols):
         return df
-    keys = list(zip(df["year"].astype(int).values, df["month"].astype(int).values))
-    coefs = np.array([INFLATION_COEFFICIENTS.get(k, 1.0) for k in keys], dtype=np.float64)
-    df["rto"] = (df["rto"].astype(np.float64) * coefs)
+
+    # Load inflation coefficients
+    infl_df = pd.read_csv(inflation_file)
+
+    # Merge coefficients
+    df = df.merge(infl_df[['year', 'month', 'inflation_coefficient']],
+                  on=['year', 'month'], how='left')
+
+    # If no coefficient found (e.g., future months), keep original
+    df['inflation_coefficient'] = df['inflation_coefficient'].fillna(1.0)
+
+    df['rto'] = df['rto'] * df['inflation_coefficient']
+    df.drop(columns=['inflation_coefficient'], inplace=True)
+
     return df
 
 
