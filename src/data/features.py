@@ -17,7 +17,7 @@ from .loader import CAT_COLS, DYNAMIC_COLS
 _DAYS_IN_MONTH_BASE = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=np.int8)
 
 
-def add_region_spendings(df, spendings_file="../data/processed/region_spendings_inflated.csv"):
+def add_region_spendings(df, spendings_file="data/processed/region_spendings.csv"):
     """
     Добавляет в df колонку 'region_spendings_inflated' с расходами на продовольствие
     по региону на соответствующий месяц и год (с учётом инфляции).
