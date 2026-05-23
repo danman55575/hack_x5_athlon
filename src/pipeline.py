@@ -22,6 +22,10 @@ from .utils.io import save_json, save_pickle
 
 ALL_MODELS = {**MODEL_REGISTRY, "linear": LinearModel, "mlp": MLPModel}
 
+# Hackathon submission requirements
+EXPECTED_SUBMISSION_ROWS = 18657
+MAX_SUBMISSION_FILE_SIZE = 1_000_000  # 1 MB
+
 
 def get_model(name, params=None):
     if name not in ALL_MODELS:
@@ -193,6 +197,56 @@ def _sanity_cap(df_pred_rows: pd.DataFrame, pred: np.ndarray, logger,
     return pred
 
 
+def _validate_submission(submission: pd.DataFrame, logger,
+                          expected_rows: int = EXPECTED_SUBMISSION_ROWS) -> None:
+    """Жёсткая валидация формата посылки ПЕРЕД сохранением.
+
+    Проверки соответствуют требованиям хакатона:
+    - ровно 18657 строк
+    - колонки {new_id, rto}
+    - уникальные new_id, без NaN
+    - все rto конечны и > 0
+    Любое нарушение → AssertionError (намеренный cras).
+    """
+    assert set(submission.columns) == {"new_id", "rto"}, (
+        f"Submission must have exactly columns {{new_id, rto}}, "
+        f"got {list(submission.columns)}"
+    )
+    assert len(submission) == expected_rows, (
+        f"Submission has {len(submission)} rows, expected {expected_rows}"
+    )
+    assert submission["new_id"].notna().all(), "NaN in new_id column"
+    assert submission["new_id"].is_unique, (
+        f"Duplicate new_id in submission: "
+        f"{submission['new_id'].duplicated().sum()} duplicates"
+    )
+    n_nan = int(submission["rto"].isna().sum())
+    assert n_nan == 0, f"NaN in predictions: {n_nan} NaN values"
+    n_inf = int((~np.isfinite(submission["rto"])).sum())
+    assert n_inf == 0, f"Non-finite (inf) predictions: {n_inf}"
+    n_nonpos = int((submission["rto"] <= 0).sum())
+    assert n_nonpos == 0, (
+        f"Non-positive predictions: {n_nonpos} found, "
+        f"min={submission['rto'].min()}"
+    )
+    rto = submission["rto"].astype(np.float64)
+    logger.info(
+        f"Submission validation OK: rows={len(submission)}, "
+        f"rto min={rto.min():,.0f}, p50={rto.median():,.0f}, "
+        f"mean={rto.mean():,.0f}, max={rto.max():,.0f}"
+    )
+
+
+def _validate_submission_file(path: Path, logger,
+                               max_bytes: int = MAX_SUBMISSION_FILE_SIZE) -> None:
+    size = Path(path).stat().st_size
+    assert size < max_bytes, (
+        f"Submission file too large: {size} bytes (max {max_bytes}). "
+        f"Reduce numeric precision."
+    )
+    logger.info(f"Submission file size: {size:,} bytes (limit {max_bytes:,})")
+
+
 def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") -> dict:
     set_seed(config.get("seed", 2026))
     exp_name = config["name"]
@@ -270,7 +324,6 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
             X_tr, y_tr, X_va, y_va_log, cat_features_in, sw, sw_v, seeds)
         pred_orig = inv(pred_log_avg)
 
-        # B2: применяем sanity cap внутри фолдов, чтобы CV-MAPE = submit-MAPE по характеру.
         if apply_cap_in_cv:
             cap_dump = Path("experiments/reports") / f"{exp_name}_{ts}_sanity_cap_{fold.name}.csv"
             pred_orig = _sanity_cap(
@@ -344,13 +397,19 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         "new_id": df_feat.loc[pred_idx, "store_id"].values.astype(int),
         "rto": pred_orig,
     }).sort_values("new_id").reset_index(drop=True)
-    assert submission["new_id"].is_unique
+
+    # === HARD SUBMISSION VALIDATION ===
+    _validate_submission(submission, logger)
+
     sub_path = Path("experiments/predictions") / f"{exp_name}_{ts}.csv"
     sub_path.parent.mkdir(parents=True, exist_ok=True)
     submission.to_csv(sub_path, index=False)
+    _validate_submission_file(sub_path, logger)
+
     final_sub_path = Path("data/submissions") / f"{exp_name}_{ts}_test.csv"
     final_sub_path.parent.mkdir(parents=True, exist_ok=True)
     submission.to_csv(final_sub_path, index=False)
+    _validate_submission_file(final_sub_path, logger)
 
     if config.get("save_oof", True):
         oof_path = Path("experiments/oof") / f"{exp_name}_{ts}_oof.parquet"
