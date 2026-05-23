@@ -5,8 +5,12 @@ target_transform: log1p
 use_cat: false
 save_oof: true
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
+cv_fold_weights: [3.0, 1.5, 1.0, 2.0]
 seed_bag: [2026]
 winsorize_quantile: 0.999
+sanity_cap_up: 2.0
+sanity_cap_down: 0.5
+apply_sanity_cap_in_cv: true
 params:
   kind: ridge
   alpha: 5.0

@@ -6,11 +6,14 @@ use_cat: true
 save_oof: true
 mape_weights: true
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
-cv_fold_weights: [3.0, 2.0, 1.0, 0.0]
-fold_iter_use_weights_gt: 2.5
+cv_fold_weights: [3.0, 1.5, 1.0, 2.0]
+fold_iter_use_weights_gt: 0.5
 final_iter_multiplier: 1.10
 seed_bag: [2026, 41, 777]
 winsorize_quantile: 0.999
+sanity_cap_up: 2.0
+sanity_cap_down: 0.5
+apply_sanity_cap_in_cv: true
 params:
   objective: regression_l1
   metric: mape

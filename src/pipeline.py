@@ -1,13 +1,4 @@
 """Главный пайплайн: seed bagging, OOF, time-aware TE, ensemble финальной модели.
-
-Изменения:
-- _sanity_cap: убран двойной учёт инфляции (* 1.12) — данные уже в ценах марта 2025.
-- Финальный num_iters: weighted geometric mean (а не median) по cv_fold_weights —
-  устойчивее к разбросу best_iter между фолдами. Дополнительно фильтр через
-  fold_iter_use_weights_gt: оставляем только фолды с большим весом.
-- Логируется реальное количество сидов в seed_bag (диагностика бага №3).
-- final_iter_multiplier дефолт уменьшен с 1.15 до 1.10.
-- _sanity_cap: пороги мягко сужены с (2.5, 0.35) до (2.0, 0.5).
 """
 from __future__ import annotations
 import time, json
@@ -50,7 +41,6 @@ def _prepare(train_path, target_transform, winsorize_quantile):
         ets = pd.read_parquet(ets_path)
         df_feat = df_feat.merge(ets, on=["store_id", "t"], how="left")
         df_feat = df_feat.reset_index(drop=True)
-        # Подхватываем ВСЕ ets_* колонки (улучшенный ETS может отдавать несколько фич)
         for col in ets.columns:
             if col.startswith("ets_") and col in df_feat.columns and col not in feat_cols:
                 feat_cols.append(col)
@@ -113,8 +103,6 @@ def _train_seed_bag(model_name, params, X_tr, y_tr, X_va, y_va,
 
 
 def _weighted_geom_mean_iters(per_fold_data, multiplier, logger=None):
-    """per_fold_data: list of dicts {name, weight, iters: List[int]}.
-    Возвращает int(weighted_geom_mean(median_iters_per_fold, weights) * multiplier)."""
     medians, weights, names = [], [], []
     for d in per_fold_data:
         if d["iters"]:
@@ -140,6 +128,71 @@ def _weighted_geom_mean_iters(per_fold_data, multiplier, logger=None):
     return nb
 
 
+def _sanity_cap(df_pred_rows: pd.DataFrame, pred: np.ndarray, logger,
+                up_mul: float = 2.0, down_mul: float = 0.5,
+                dump_path: Path | None = None,
+                tag: str = "") -> np.ndarray:
+    """Мягкая защита от единичных экстремальных предсказаний.
+
+    Если pred/lag1 выходит за [down_mul, up_mul] — заменяем на медиану от безопасных
+    fallback-предсказаний. Данные УЖЕ нормированы под цены марта 2025.
+
+    Логируем заменённые new_id вместе с original/replacement в CSV (если dump_path задан).
+    """
+    pred = np.asarray(pred, dtype=np.float64).copy()
+    lag1 = df_pred_rows.get("rto_lag_1", pd.Series(np.nan)).values.astype(np.float64)
+    macro = df_pred_rows.get("grp_all_yoy_macro_median",
+                              pd.Series(np.nan)).values.astype(np.float64)
+    naive_seasonal = df_pred_rows.get("rto_naive_seasonal",
+                                       pd.Series(np.nan)).values.astype(np.float64)
+    same_m_1y = df_pred_rows.get("rto_same_month_1y",
+                                  pd.Series(np.nan)).values.astype(np.float64)
+    lag1_scaled = df_pred_rows.get("rto_lag_1_scaled_by_days",
+                                    pd.Series(np.nan)).values.astype(np.float64)
+
+    store_ids = df_pred_rows.get("store_id", pd.Series(np.arange(len(pred)))).values
+
+    replaced_rows = []
+    for i in range(len(pred)):
+        if not np.isfinite(lag1[i]) or lag1[i] <= 0:
+            continue
+        ratio = pred[i] / lag1[i]
+        if ratio > up_mul or ratio < down_mul:
+            cand = []
+            if np.isfinite(macro[i]) and macro[i] > 0:
+                cand.append(lag1[i] * macro[i])
+            if np.isfinite(naive_seasonal[i]) and naive_seasonal[i] > 0:
+                cand.append(naive_seasonal[i])
+            if np.isfinite(same_m_1y[i]) and same_m_1y[i] > 0:
+                cand.append(same_m_1y[i])
+            if np.isfinite(lag1_scaled[i]) and lag1_scaled[i] > 0:
+                cand.append(lag1_scaled[i])
+            if cand:
+                old = pred[i]
+                pred[i] = float(np.median(cand))
+                replaced_rows.append({
+                    "new_id": int(store_ids[i]) if np.isfinite(store_ids[i]) else -1,
+                    "lag1": float(lag1[i]),
+                    "ratio_before": float(ratio),
+                    "pred_before": float(old),
+                    "pred_after": float(pred[i]),
+                    "ratio_after": float(pred[i] / lag1[i]),
+                    "n_candidates": len(cand),
+                })
+    n_replaced = len(replaced_rows)
+    if n_replaced > 0:
+        logger.info(f"Sanity cap [{tag}]: replaced {n_replaced} extreme predictions "
+                    f"(thresholds: up={up_mul}, down={down_mul})")
+        if dump_path is not None and n_replaced <= 5000:
+            try:
+                dump_path.parent.mkdir(parents=True, exist_ok=True)
+                pd.DataFrame(replaced_rows).to_csv(dump_path, index=False)
+                logger.info(f"Sanity-cap dump written: {dump_path}")
+            except Exception as e:
+                logger.warning(f"Sanity-cap dump failed: {e}")
+    return pred
+
+
 def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") -> dict:
     set_seed(config.get("seed", 2026))
     exp_name = config["name"]
@@ -152,14 +205,17 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     winsorize_q = config.get("winsorize_quantile", 1.0)
     use_mape_weights = bool(config.get("mape_weights", False))
     seeds = config.get("seed_bag", [config.get("seed", 2026)])
-    # Защита от случайного skalar/None в YAML
     if isinstance(seeds, (int, str)):
         seeds = [int(seeds)]
     seeds = list(seeds)
-    # Диагностика бага №3: подтверждаем, сколько сидов реально используем
     logger.info(f"Seed bag in use: {seeds} ({len(seeds)} seeds)")
 
     final_iter_multiplier = float(config.get("final_iter_multiplier", 1.10))
+
+    # Конфигурируемые пороги sanity cap
+    sanity_up = float(config.get("sanity_cap_up", 2.0))
+    sanity_down = float(config.get("sanity_cap_down", 0.5))
+    apply_cap_in_cv = bool(config.get("apply_sanity_cap_in_cv", True))
 
     df_feat, feat_cols, cat_features, y_train_all, inv = _prepare(
         train_path, target_transform, winsorize_q)
@@ -182,6 +238,8 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     logger.info(f"Fold weights: {dict(zip([f.name for f in folds], cv_fold_weights))}")
     logger.info(f"Iter selection threshold: only folds with weight > {iter_thr} are USED for choosing final num_iters")
     logger.info(f"Final iter multiplier: {final_iter_multiplier}")
+    logger.info(f"Sanity cap thresholds: up={sanity_up}, down={sanity_down}, "
+                f"apply_in_cv={apply_cap_in_cv}")
 
     use_cat = config.get("use_cat", True)
     cat_features_in = cat_features if use_cat else None
@@ -189,6 +247,8 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     fold_metrics = []
     trusted_fold_data: list[dict] = []
     oof_pred = np.full(len(df_feat), np.nan, dtype=np.float64)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
     for fold, w in zip(folds, cv_fold_weights):
         tr_idx, va_idx = fold.split(df_feat)
@@ -203,12 +263,22 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         y_va_orig = df_feat.loc[va_idx, "rto"].values
 
         sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
-        sw_v = None  # standard MAPE/MAE на валидации — корректный early stop
+        sw_v = None
 
         pred_log_avg, best_iters, _ = _train_seed_bag(
             config["model"], config.get("params", {}),
             X_tr, y_tr, X_va, y_va_log, cat_features_in, sw, sw_v, seeds)
         pred_orig = inv(pred_log_avg)
+
+        # B2: применяем sanity cap внутри фолдов, чтобы CV-MAPE = submit-MAPE по характеру.
+        if apply_cap_in_cv:
+            cap_dump = Path("experiments/reports") / f"{exp_name}_{ts}_sanity_cap_{fold.name}.csv"
+            pred_orig = _sanity_cap(
+                df_feat.loc[va_idx], pred_orig, logger,
+                up_mul=sanity_up, down_mul=sanity_down,
+                dump_path=cap_dump, tag=f"CV_{fold.name}",
+            )
+
         m_val = mape(y_va_orig, pred_orig)
         score = mape_to_score(m_val)
         oof_pred[va_idx] = pred_orig
@@ -234,7 +304,7 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     logger.info(f"CV weighted MAPE = {mean_mape:.4f} | weighted score = {mean_score:.3f}")
     logger.info(f"CV simple   MAPE = {simple_mean_mape:.4f}")
 
-    # === FINAL TRAIN на всём ≤ feb-2025, predict march-2025 ===
+    # === FINAL TRAIN ===
     tr_idx, pred_idx = predict_split(df_feat, predict_year=2025, predict_month=3)
     tr_mask = ~y_train_all.iloc[tr_idx].isna().values
     tr_idx = tr_idx[tr_mask]
@@ -245,7 +315,6 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
 
     nb_final = _weighted_geom_mean_iters(trusted_fold_data, final_iter_multiplier, logger=logger)
     if nb_final is None:
-        # Fallback: используем все фолды (даже ненадёжные)
         all_data = [{"name": f["fold"], "weight": max(f["weight"], 1.0),
                      "iters": f["best_iters"]} for f in fold_metrics]
         nb_final = _weighted_geom_mean_iters(all_data, final_iter_multiplier, logger=logger)
@@ -264,15 +333,18 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     pred_log_avg = np.mean(pred_log_avg_pred, axis=0)
     pred_orig = inv(pred_log_avg)
 
-    # ---- Sanity cap ----
-    pred_orig = _sanity_cap(df_feat.loc[pred_idx], pred_orig, logger)
+    cap_dump = Path("experiments/reports") / f"{exp_name}_{ts}_sanity_cap_FINAL.csv"
+    pred_orig = _sanity_cap(
+        df_feat.loc[pred_idx], pred_orig, logger,
+        up_mul=sanity_up, down_mul=sanity_down,
+        dump_path=cap_dump, tag="FINAL",
+    )
 
     submission = pd.DataFrame({
         "new_id": df_feat.loc[pred_idx, "store_id"].values.astype(int),
         "rto": pred_orig,
     }).sort_values("new_id").reset_index(drop=True)
     assert submission["new_id"].is_unique
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     sub_path = Path("experiments/predictions") / f"{exp_name}_{ts}.csv"
     sub_path.parent.mkdir(parents=True, exist_ok=True)
     submission.to_csv(sub_path, index=False)
@@ -310,6 +382,9 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         "mape_weights": use_mape_weights,
         "target_transform": target_transform,
         "final_iter_multiplier": final_iter_multiplier,
+        "sanity_cap_up": sanity_up,
+        "sanity_cap_down": sanity_down,
+        "apply_sanity_cap_in_cv": apply_cap_in_cv,
     }
     save_json(result, Path("experiments/reports") / f"{exp_name}_{ts}.json")
     logger.info(f"Done in {result['elapsed_seconds']:.1f}s")
@@ -318,51 +393,3 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     except Exception as e:
         logger.warning(f"pickle failed: {e}")
     return result
-
-
-def _sanity_cap(df_pred_rows: pd.DataFrame, pred: np.ndarray, logger,
-                up_mul: float = 2.0, down_mul: float = 0.5) -> np.ndarray:
-    """Мягкая защита от единичных экстремальных предсказаний.
-    Если pred/lag1 выходит за [down_mul, up_mul] — заменяем на медиану от безопасных
-    fallback-предсказаний. Данные УЖЕ нормированы под цены марта 2025, поэтому
-    дополнительный +12% к same_month_1y НЕ нужен (баг №1 устранён).
-
-    Пороги мягко сужены: было (2.5, 0.35) → стало (2.0, 0.5). Это допустимо, потому что
-    после инфляционной нормализации реальный месяц-в-месяц рост у Пятёрочек редко
-    превышает 50% (плюс эффект days_in_month: max ~31/28 = 1.107).
-    """
-    pred = np.asarray(pred, dtype=np.float64).copy()
-    lag1 = df_pred_rows.get("rto_lag_1", pd.Series(np.nan)).values.astype(np.float64)
-    macro = df_pred_rows.get("grp_all_yoy_macro_median",
-                              pd.Series(np.nan)).values.astype(np.float64)
-    naive_seasonal = df_pred_rows.get("rto_naive_seasonal",
-                                       pd.Series(np.nan)).values.astype(np.float64)
-    same_m_1y = df_pred_rows.get("rto_same_month_1y",
-                                  pd.Series(np.nan)).values.astype(np.float64)
-    # day-adjusted naive (Feb 28 → март 31 ≈ 1.107×)
-    lag1_scaled = df_pred_rows.get("rto_lag_1_scaled_by_days",
-                                    pd.Series(np.nan)).values.astype(np.float64)
-
-    n_replaced = 0
-    for i in range(len(pred)):
-        if not np.isfinite(lag1[i]) or lag1[i] <= 0:
-            continue
-        ratio = pred[i] / lag1[i]
-        if ratio > up_mul or ratio < down_mul:
-            cand = []
-            if np.isfinite(macro[i]) and macro[i] > 0:
-                cand.append(lag1[i] * macro[i])
-            if np.isfinite(naive_seasonal[i]) and naive_seasonal[i] > 0:
-                cand.append(naive_seasonal[i])
-            if np.isfinite(same_m_1y[i]) and same_m_1y[i] > 0:
-                # БЕЗ +12%! Данные уже в ценах марта 2025.
-                cand.append(same_m_1y[i])
-            if np.isfinite(lag1_scaled[i]) and lag1_scaled[i] > 0:
-                cand.append(lag1_scaled[i])
-            if cand:
-                pred[i] = float(np.median(cand))
-                n_replaced += 1
-    if n_replaced > 0:
-        logger.info(f"Sanity cap: replaced {n_replaced} extreme predictions "
-                    f"(thresholds: up={up_mul}, down={down_mul})")
-    return pred

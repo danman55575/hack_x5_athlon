@@ -59,7 +59,6 @@ def _latest_report(stem):
     rep = _latest(f"experiments/reports/{stem}_*.json")
     if not rep:
         return None, None, None
-    # ts из имени отчёта используем чтобы найти соответствующий oof и pred
     ts = Path(rep).stem[len(stem) + 1:]  # после "stem_"
     oof = f"experiments/oof/{stem}_{ts}_oof.parquet"
     pred = f"experiments/predictions/{stem}_{ts}.csv"
@@ -131,10 +130,6 @@ def stage_blend_with_stack():
     if not (p1.exists() and p2.exists()):
         print("Need both stack_latest.csv and blend_latest.csv; run stack and blend first")
         return
-    cmd = ["python", "-m", "scripts.make_submission",
-           "--predictions", str(p1), "--out",
-           "data/submissions/super_blend.csv", "--mode", "gmean"]
-    # бленд двух — равные веса
     cmd = ["python", "-m", "scripts.make_submission",
            "--predictions", str(p1), str(p2),
            "--weights", "0.5", "0.5", "--mode", "gmean",

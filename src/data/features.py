@@ -1,37 +1,13 @@
 """Безутечковая фичегенерация. Все лаги/роллинги/тренды со сдвигом shift(1).
 Target encoding делается отдельно out-of-fold в pipeline.
-
-Изменения:
-- Добавлены days_in_month / days_per_month_ratio (учёт того, что в феврале 28/29 дней,
-  а в марте 31, что даёт ~10.7% разницу в РТО только за счёт длины месяца).
-- Добавлены rto_lag_1_per_day, rto_lag_12_per_day, rto_lag_1_scaled_by_days
-  (day-adjusted naive forecasts).
-- Добавлены days_in_month_lag_1, days_ratio_curr_to_lag*.
 """
 from __future__ import annotations
 import numpy as np
 import pandas as pd
 from .loader import CAT_COLS, DYNAMIC_COLS
 
-# ---------- DAYS-IN-MONTH ----------
+# DAYS-IN-MONTH
 _DAYS_IN_MONTH_BASE = np.array([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31], dtype=np.int8)
-
-
-def add_region_spendings(df, spendings_file="data/processed/region_spendings.csv"):
-    """
-    Добавляет в df колонку 'region_spendings_inflated' с расходами на продовольствие
-    по региону на соответствующий месяц и год (с учётом инфляции).
-    """
-    spendings_df = pd.read_csv(spendings_file)
-
-    # Выполняем left join
-    df = df.merge(
-        spendings_df[['year', 'month', 'region', 'region_spendings_inflated']],
-        on=['year', 'month', 'region'],
-        how='left'
-    )
-
-    return df
 
 
 def add_lag_features(df, target="rto", lags=(1, 2, 3, 6, 7, 9, 10, 12, 13, 15, 16, 24, 25),
@@ -140,7 +116,6 @@ def add_dynamic_lags(df, group="store_id"):
     return df
 
 
-
 def _is_leap_year(year: int) -> bool:
     return (year % 4 == 0) and (year % 100 != 0 or year % 400 == 0)
 
@@ -164,40 +139,42 @@ def add_calendar_features(df):
     df["is_dec"]    = (df["month"] == 12).astype(np.int8)
     df["quarter"]   = ((df["month"] - 1) // 3 + 1).astype(np.int8)
 
-    # КРИТИЧНО для прогноза марта по февралю: 31 vs 28 = +10.7% только за счёт длины
     df["days_in_month"] = _days_in_month_vec(df["year"].values, df["month"].values)
     df["days_per_month_ratio"] = (df["days_in_month"].astype(np.float32) / 30.4375).astype(np.float32)
     return df
 
 
 def add_days_features(df, target="rto", group="store_id"):
-    """Day-adjusted фичи. Должен вызываться ПОСЛЕ add_calendar_features и add_lag_features."""
+    """Day-adjusted фичи. Должен вызываться ПОСЛЕ add_calendar_features и add_lag_features.
+    """
     if "days_in_month" not in df.columns:
         return df
 
     g_dim = df.groupby(group)["days_in_month"]
     df["days_in_month_lag_1"]  = g_dim.shift(1).astype(np.float32)
+    df["days_in_month_lag_12"] = g_dim.shift(12).astype(np.float32)
     df["days_ratio_curr_to_lag1"] = (
         df["days_in_month"].astype(np.float32) / df["days_in_month_lag_1"].replace(0, np.nan)
+    ).astype(np.float32)
+    df["days_ratio_curr_to_lag12"] = (
+        df["days_in_month"].astype(np.float32) / df["days_in_month_lag_12"].replace(0, np.nan)
     ).astype(np.float32)
 
     if f"{target}_lag_1" in df.columns:
         df[f"{target}_lag_1_per_day"] = (
             df[f"{target}_lag_1"] / df["days_in_month_lag_1"].replace(0, np.nan)
         ).astype(np.float32)
-        # День-нормализованный наивный прогноз: lag1 * (days_curr / days_prev)
         df[f"{target}_lag_1_scaled_by_days"] = (
             df[f"{target}_lag_1"] * df["days_ratio_curr_to_lag1"]
         ).astype(np.float32)
     if f"{target}_lag_12" in df.columns:
         df[f"{target}_lag_12_per_day"] = (
-            df[f"{target}_lag_12"] / df["days_in_month"].replace(0, np.nan)
+            df[f"{target}_lag_12"] / df["days_in_month_lag_12"].replace(0, np.nan)
         ).astype(np.float32)
     if f"{target}_same_month_1y" in df.columns:
         df[f"{target}_same_month_1y_per_day"] = (
-            df[f"{target}_same_month_1y"] / df["days_in_month"].replace(0, np.nan)
+            df[f"{target}_same_month_1y"] / df["days_in_month_lag_12"].replace(0, np.nan)
         ).astype(np.float32)
-    # Per-day-adjusted YoY: (lag1/days_lag1) / (lag12/days_lag12)
     if f"{target}_lag_1_per_day" in df.columns and f"{target}_lag_12_per_day" in df.columns:
         df[f"{target}_per_day_yoy_ratio"] = (
             df[f"{target}_lag_1_per_day"] / df[f"{target}_lag_12_per_day"].replace(0, np.nan)
@@ -206,31 +183,40 @@ def add_days_features(df, target="rto", group="store_id"):
 
 
 def add_group_aggregations(df, target="rto"):
-    df = df.copy()
-    original_index = df.index
-    
+    """Кросс-магазинные агрегаты, без leakage.
+    """
+    df = df.copy().reset_index(drop=True)
+    df["_orig_pos"] = np.arange(len(df), dtype=np.int64)
+
     df["_rto_lag1"]  = df.groupby("store_id")[target].shift(1)
     df["_rto_lag12"] = df.groupby("store_id")[target].shift(12)
     df["_rto_lag13"] = df.groupby("store_id")[target].shift(13)
 
-    # Сортируем по времени для expanding
-    df = df.sort_values("t").reset_index(drop=True)
+    df = df.sort_values("t", kind="mergesort").reset_index(drop=True)
 
     for key in ["region", "area_cat", "open_date_cat"]:
         if key not in df.columns:
             continue
 
-        # Expanding mean для lag1
-        df[f"grp_{key}_lag1_mean"] = df.groupby(key)["_rto_lag1"].expanding().mean().shift(1).reset_index(level=0, drop=True)
-        # Expanding median для lag1
-        df[f"grp_{key}_lag1_median"] = df.groupby(key)["_rto_lag1"].expanding().quantile(0.5).shift(1).reset_index(level=0, drop=True)
+        df[f"grp_{key}_lag1_mean"] = (
+            df.groupby(key)["_rto_lag1"].expanding().mean()
+              .shift(1).reset_index(level=0, drop=True)
+        )
+        df[f"grp_{key}_lag1_median"] = (
+            df.groupby(key)["_rto_lag1"].expanding().quantile(0.5)
+              .shift(1).reset_index(level=0, drop=True)
+        )
 
-        # YoY: _rto_lag1 / _rto_lag12
         yoy = df["_rto_lag1"] / df["_rto_lag12"].replace(0, np.nan)
-        df[f"grp_{key}_yoy_mean"] = yoy.groupby(df[key]).expanding().mean().shift(1).reset_index(level=0, drop=True)
-        df[f"grp_{key}_yoy_median"] = yoy.groupby(df[key]).expanding().quantile(0.5).shift(1).reset_index(level=0, drop=True)
+        df[f"grp_{key}_yoy_mean"] = (
+            yoy.groupby(df[key]).expanding().mean()
+               .shift(1).reset_index(level=0, drop=True)
+        )
+        df[f"grp_{key}_yoy_median"] = (
+            yoy.groupby(df[key]).expanding().quantile(0.5)
+               .shift(1).reset_index(level=0, drop=True)
+        )
 
-    df = df.copy()
     df["grp_all_lag1_mean"]  = df.groupby("t")["_rto_lag1"].transform("mean")
     df["grp_all_lag12_mean"] = df.groupby("t")["_rto_lag12"].transform("mean")
     yoy_macro = df["_rto_lag1"] / df["_rto_lag13"].replace(0, np.nan)
@@ -239,16 +225,15 @@ def add_group_aggregations(df, target="rto"):
 
     df = df.drop(columns=["_rto_lag1", "_rto_lag12", "_rto_lag13"])
 
-    # Восстанавливаем исходный порядок строк
-    df = df.set_index(original_index)
+    df = df.sort_values("_orig_pos", kind="mergesort").reset_index(drop=True)
+    df = df.drop(columns=["_orig_pos"])
     return df
 
 
 def encode_categoricals_ordinal(df, cat_cols=CAT_COLS):
     mappings = {}
     if cat_cols is None:
-        cat_cols=CAT_COLS
-        
+        cat_cols = CAT_COLS
     for c in cat_cols:
         if c not in df.columns:
             continue
@@ -269,11 +254,9 @@ def downcast(df):
     return df
 
 
-
 def build_features(df: pd.DataFrame, target: str = "rto"):
-    df = df.sort_values(["store_id", "t"]).copy()
+    df = df.sort_values(["store_id", "t"]).copy().reset_index(drop=True)
 
-    df = add_region_spendings(df)
     df = add_lag_features(df, target=target)
     df = add_rolling_features(df, target=target)
     df = add_diff_features(df, target=target)

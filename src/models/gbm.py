@@ -32,16 +32,22 @@ class LightGBMModel(BaseModel):
             params["feature_fraction_seed"] = int(seed)
         n_rounds = params.pop("num_boost_round", 5000)
         early_stop = params.pop("early_stopping_rounds", 200)
-        cat_features = cat_features or "auto"
-        dtrain = lgb.Dataset(X, label=y, categorical_feature=cat_features,
-                             weight=sample_weight)
+
+        if cat_features:
+            dtrain = lgb.Dataset(X, label=y, categorical_feature=cat_features,
+                                 weight=sample_weight)
+        else:
+            dtrain = lgb.Dataset(X, label=y, weight=sample_weight)
+
         valid_sets, valid_names = [dtrain], ["train"]
         callbacks = [lgb.log_evaluation(period=0)]
         if X_val is not None:
-            # ВАЖНО: на валидации НЕ передаём weight. metric=mape само нормирует,
-            # weighted-mape с w=1/y даёт нестандартную метрику и портит early-stopping.
-            dval = lgb.Dataset(X_val, label=y_val, categorical_feature=cat_features,
-                               reference=dtrain, weight=sample_weight_val)
+            if cat_features:
+                dval = lgb.Dataset(X_val, label=y_val, categorical_feature=cat_features,
+                                   reference=dtrain, weight=sample_weight_val)
+            else:
+                dval = lgb.Dataset(X_val, label=y_val, reference=dtrain,
+                                   weight=sample_weight_val)
             valid_sets.append(dval); valid_names.append("valid")
             callbacks.insert(0, lgb.early_stopping(early_stop, verbose=False))
         self.model_ = lgb.train(params, dtrain, num_boost_round=n_rounds,
@@ -81,10 +87,17 @@ class XGBoostModel(BaseModel):
             params["seed"] = int(seed)
         n_rounds = params.pop("num_boost_round", 5000)
         early_stop = params.pop("early_stopping_rounds", 200)
-        enable_cat = bool(cat_features)
-        # Сохраняем для predict — fit/predict гарантированно в одном режиме.
+
+        has_pd_cats = False
+        if hasattr(X, "dtypes"):
+            try:
+                has_pd_cats = any(str(t) == "category" for t in X.dtypes)
+            except Exception:
+                has_pd_cats = False
+        enable_cat = bool(has_pd_cats)
         self._enable_categorical = enable_cat
         params["enable_categorical"] = enable_cat
+
         dtrain = xgb.DMatrix(X, label=y, enable_categorical=enable_cat, weight=sample_weight)
         evals = [(dtrain, "train")]
         if X_val is not None:
@@ -101,7 +114,6 @@ class XGBoostModel(BaseModel):
         return self
 
     def predict(self, X):
-        # КРИТИЧНО: используем РЕАЛЬНЫЙ режим из fit, не хардкод.
         enable_cat = getattr(self, "_enable_categorical", False)
         d = xgb.DMatrix(X, enable_categorical=enable_cat)
         it = getattr(self.model_, "best_iteration", None)
@@ -131,8 +143,6 @@ class CatBoostModel(BaseModel):
         params = {**self.default_params, **self.params}
         if seed is not None:
             params["random_seed"] = int(seed)
-        # КРИТИЧНО: без eval_set нельзя оставлять od_* — катбуст либо ругается,
-        # либо ведёт себя неконсистентно. Чистим даже если в self.params они есть.
         if X_val is None:
             for k in ("od_type", "od_wait", "od_pval"):
                 params.pop(k, None)

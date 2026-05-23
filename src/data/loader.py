@@ -2,6 +2,10 @@ from pathlib import Path
 import pandas as pd
 import numpy as np
 
+# ВАЖНО: фиксированная базовая точка отсчёта времени, чтобы значение `t`
+# не зависело от того, какие именно строки попали в текущий запуск.
+BASE_YEAR: int = 2023
+
 RENAME_MAP = {
     "new_id": "store_id",
     "Год": "year",
@@ -48,11 +52,19 @@ def load_raw(train_path: str | Path = "data/processed/v2.parquet") -> pd.DataFra
         if "new_id" in df.columns:
             df = df.rename(columns=RENAME_MAP)
 
+    if "РТО" in df.columns:
+        import warnings
+        warnings.warn(
+            "load_raw() читает сырой train_2.csv (русские названия колонок остались). "
+            "Для боевого pipeline сначала запусти `python -m src.data.preprocess`.",
+            UserWarning,
+        )
+        df = df.rename(columns=RENAME_MAP)
+
     df["store_id"] = df["store_id"].astype(np.int32)
     df["year"] = df["year"].astype(np.int16)
     df["month"] = df["month"].astype(np.int8)
-    base_year = int(df["year"].min())
-    df["t"] = ((df["year"] - base_year) * 12 + (df["month"] - 1)).astype(np.int16)
+    df["t"] = ((df["year"] - BASE_YEAR) * 12 + (df["month"] - 1)).astype(np.int16)
     df = df.sort_values(["store_id", "t"]).reset_index(drop=True)
     return df
 
@@ -61,10 +73,14 @@ def add_target_row_for_march_2025(df: pd.DataFrame) -> pd.DataFrame:
     has_march = ((df["year"] == 2025) & (df["month"] == 3)).any()
     if has_march:
         return df
-    base_t = (2025 - int(df["year"].min())) * 12 + (3 - 1)
-    static_cols = [c for c in STORE_STATIC_COLS if c in df.columns]
-    last_per_store = (df.sort_values("t").groupby("store_id", as_index=False).tail(1)
-                      [["store_id"] + static_cols].copy())
+
+    base_t = (2025 - BASE_YEAR) * 12 + (3 - 1)
+    exclude = set(DYNAMIC_COLS) | {"rto", "year", "month", "t"}
+    cols_to_copy = [c for c in df.columns if c not in exclude]
+
+    last_per_store = (df.sort_values("t")
+                      .groupby("store_id", as_index=False)
+                      .tail(1)[cols_to_copy].copy())
     new_rows = last_per_store.copy()
     new_rows["year"] = np.int16(2025)
     new_rows["month"] = np.int8(3)
@@ -73,6 +89,7 @@ def add_target_row_for_march_2025(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             new_rows[col] = np.nan
     new_rows["rto"] = np.nan
+
     out = pd.concat([df, new_rows], ignore_index=True)
     out = out.sort_values(["store_id", "t"]).reset_index(drop=True)
     return out

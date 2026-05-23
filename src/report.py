@@ -8,22 +8,25 @@ from datetime import datetime
 
 def save_best_models(rows: list[dict], out_path: str | Path = "experiments/reports/best_models.csv") -> None:
     """Save top 10 best models to CSV file.
-    
+
     Reads existing best_models.csv, adds new rows, sorts by CV MAPE (ascending),
     and keeps only the top 10 models.
-    
+
     Args:
         rows: List of experiment result dictionaries (already sorted by CV MAPE)
         out_path: Path to save best_models.csv
     """
     out_path = Path(out_path)
-    
+
     # Read existing best models if file exists
     if out_path.exists():
-        df_existing = pd.read_csv(out_path)
+        try:
+            df_existing = pd.read_csv(out_path)
+        except Exception:
+            df_existing = pd.DataFrame()
     else:
         df_existing = pd.DataFrame()
-    
+
     # Create DataFrame from new rows
     if rows:
         df_new = pd.DataFrame([
@@ -41,7 +44,7 @@ def save_best_models(rows: list[dict], out_path: str | Path = "experiments/repor
         ])
     else:
         df_new = pd.DataFrame()
-    
+
     # Combine DataFrames
     if not df_existing.empty and not df_new.empty:
         df_all = pd.concat([df_existing, df_new], ignore_index=True)
@@ -49,20 +52,30 @@ def save_best_models(rows: list[dict], out_path: str | Path = "experiments/repor
         df_all = df_new.copy()
     else:
         df_all = df_existing.copy()
-    
-    # Remove duplicates (keep first occurrence by name)
-    df_all = df_all.drop_duplicates(subset=['name'], keep='first')
-    
-    # Sort by CV MAPE (ascending - lower is better)
+
+    if df_all.empty:
+        # Nothing to save yet
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        pd.DataFrame(columns=['rank', 'name', 'model', 'cv_mape', 'cv_score',
+                              'feature_count', 'elapsed_seconds', 'timestamp',
+                              'submission_path']).to_csv(out_path, index=False, encoding='utf-8')
+        return
+
+    # Drop legacy 'rank' column if present
+    if 'rank' in df_all.columns:
+        df_all = df_all.drop(columns=['rank'])
+
+    df_all = df_all.sort_values('cv_mape').drop_duplicates(subset=['name'], keep='first')
+
+    # Sort by CV MAPE
     df_all = df_all.sort_values('cv_mape').reset_index(drop=True)
-    
+
     # Keep only top 10
     df_top_10 = df_all.head(10).copy()
-    
+
     # Add rank
-    df_top_10.drop(columns=['rank'], inplace=True, errors='ignore')
     df_top_10.insert(0, 'rank', range(1, len(df_top_10) + 1))
-    
+
     # Save to CSV
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df_top_10.to_csv(out_path, index=False, encoding='utf-8')
@@ -77,21 +90,25 @@ def generate_report(reports_dir: str | Path = "experiments/reports",
         try:
             with open(fp, encoding="utf-8") as f:
                 r = json.load(f)
+
+            if "cv_folds" not in r:
+                continue
             rows.append(r)
         except Exception:
             continue
     rows.sort(key=lambda r: r.get("cv_mean_mape", float("inf")))
 
     # Save top 10 models to CSV
-    best_models_path = Path(reports_dir).parent / "best_models.csv"
+    best_models_path = Path(reports_dir).parent / "reports" / "best_models.csv"
     save_best_models(rows, best_models_path)
-    
+
     # Load best models ranking
     best_models_ranking = {}
     if best_models_path.exists():
         try:
             df_best = pd.read_csv(best_models_path)
-            best_models_ranking = dict(zip(df_best['name'], df_best['rank']))
+            if 'rank' in df_best.columns and 'name' in df_best.columns:
+                best_models_ranking = dict(zip(df_best['name'], df_best['rank']))
         except Exception:
             pass
 
@@ -118,7 +135,7 @@ def generate_report(reports_dir: str | Path = "experiments/reports",
         lines.append(f"[{r.get('name')}] model={r.get('model')} ts={r.get('timestamp')}")
         lines.append(f"  params: {json.dumps(r.get('params', {}), ensure_ascii=False)}")
         lines.append(f"  CV mean MAPE: {r.get('cv_mean_mape', float('nan')):.4f}  |  Score: {r.get('cv_mean_score', float('nan')):.3f}")
-        
+
         # Add ranking info
         model_name = r.get('name', '')
         if model_name in best_models_ranking:
@@ -126,7 +143,7 @@ def generate_report(reports_dir: str | Path = "experiments/reports",
             lines.append(f"  ★ Rank: #{rank} overall")
         else:
             lines.append(f"  ✗ Not in top 10 overall")
-        
+
         for f in r.get("cv_folds", []):
             lines.append(f"    fold {f['fold']:<8} MAPE={f['mape']:.4f} score={f['score']:.3f} "
                          f"n_train={f['n_train']} n_val={f['n_val']}")
