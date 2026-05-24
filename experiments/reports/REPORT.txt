@@ -1,15 +1,16 @@
 ==============================================================================================================
-  HACKATHON RTO — EXPERIMENT REPORT — generated at 2026-05-23 16:54:32
+  HACKATHON RTO — EXPERIMENT REPORT — generated at 2026-05-24 12:34:21
 ==============================================================================================================
-  Total experiments: 5
+  Total experiments: 6
 
 Rank  Name                                Model           CV MAPE   CV Score  Feats   Time(s)
 --------------------------------------------------------------------------------------------------------------
 1     lgbm_l1_log                         lightgbm         4.4269     91.345    135   11620.8
 2     lgbm_l1_log                         lightgbm         4.5374     91.132    136    1840.8
 3     lgbm_l1_log                         lightgbm         4.8199     90.596    125    3627.7
-4     ridge_log                           linear          29.0446     58.149    124     222.2
-5     ridge_log                           linear          29.0732     58.098    124     277.3
+4     lgbm_l1_log                         lightgbm         5.3110     89.671    219    3981.8
+5     ridge_log                           linear          29.0446     58.149    124     222.2
+6     ridge_log                           linear          29.0732     58.098    124     277.3
 
 ==============================================================================================================
   PER-FOLD DETAILS
@@ -43,6 +44,16 @@ Rank  Name                                Model           CV MAPE   CV Score  Fe
     fold 2024-09  MAPE=4.7216 score=90.780 n_train=373140 n_val=18657
     fold 2024-03  MAPE=8.0167 score=84.609 n_train=261198 n_val=18657
   submission: experiments\predictions\lgbm_l1_log_20260522_214946.csv
+
+[lgbm_l1_log] model=lightgbm ts=20260524_113035
+  params: {"objective": "regression_l1", "metric": "mae", "learning_rate": 0.03, "num_leaves": 95, "min_data_in_leaf": 80, "feature_fraction": 0.8, "bagging_fraction": 0.85, "bagging_freq": 1, "lambda_l1": 0.1, "lambda_l2": 1.5, "num_boost_round": 12000, "early_stopping_rounds": 300, "num_threads": 4, "verbose": -1}
+  CV mean MAPE: 5.3110  |  Score: 89.671
+  ★ Rank: #1 overall
+    fold 2025-02  MAPE=5.0950 score=90.070 n_train=466425 n_val=18657
+    fold 2024-12  MAPE=3.8905 score=92.370 n_train=429111 n_val=18657
+    fold 2024-09  MAPE=5.0381 score=90.178 n_train=373140 n_val=18657
+    fold 2024-03  MAPE=6.8368 score=86.794 n_train=261198 n_val=18657
+  submission: experiments\predictions\lgbm_l1_log_20260524_113035.csv
 
 [ridge_log] model=linear ts=20260522_164612
   params: {"kind": "ridge", "alpha": 5.0}

@@ -9,7 +9,7 @@ import pandas as pd
 
 from .data.loader import load_raw, add_target_row_for_march_2025
 from .data.target_encoding import add_target_encodings
-from .data.features import build_features
+from .data.features import audit_feature_frame, build_features, select_feature_columns
 from .validation.cv import default_folds, predict_split
 from .validation.metrics import mape, mape_to_score
 from .models.gbm import MODEL_REGISTRY
@@ -33,7 +33,7 @@ def get_model(name, params=None):
     return ALL_MODELS[name](params or {})
 
 
-def _prepare(train_path, target_transform, winsorize_quantile):
+def _prepare(train_path, target_transform, winsorize_quantile, feature_groups=None):
     df = load_raw(train_path)
     df = add_target_row_for_march_2025(df)
     df = add_target_encodings(df, target="rto")
@@ -49,7 +49,12 @@ def _prepare(train_path, target_transform, winsorize_quantile):
             if col.startswith("ets_") and col in df_feat.columns and col not in feat_cols:
                 feat_cols.append(col)
 
+    if feature_groups:
+        feat_cols = select_feature_columns(feat_cols, feature_groups)
+        cat_features = [c for c in cat_features if c in feat_cols]
+
     df_feat = df_feat.copy()
+    feature_audit = audit_feature_frame(df_feat, feat_cols)
 
     cap = df_feat["rto"].quantile(winsorize_quantile)
     df_feat["_rto_train"] = df_feat["rto"].clip(upper=cap)
@@ -61,7 +66,7 @@ def _prepare(train_path, target_transform, winsorize_quantile):
         y_train_all = df_feat["_rto_train"].astype(np.float64)
         inv = lambda yp: np.clip(yp, 1.0, None)
 
-    return df_feat, feat_cols, cat_features, y_train_all, inv
+    return df_feat, feat_cols, cat_features, y_train_all, inv, feature_audit
 
 
 def _maybe_weights(use_mape, y_orig):
@@ -247,6 +252,33 @@ def _validate_submission_file(path: Path, logger,
     logger.info(f"Submission file size: {size:,} bytes (limit {max_bytes:,})")
 
 
+def _compute_segment_mapes(
+    df_train: pd.DataFrame,
+    df_valid: pd.DataFrame,
+    pred_orig: np.ndarray,
+) -> dict[str, float]:
+    """Считает MAPE по сегментам магазинов на основе масштаба train-fold."""
+    store_scale = df_train.groupby("store_id")["rto"].mean()
+    if len(store_scale) < 3:
+        return {}
+
+    q1, q2 = store_scale.quantile([1 / 3, 2 / 3]).tolist()
+    segment_map = pd.Series("medium", index=store_scale.index, dtype="object")
+    segment_map.loc[store_scale <= q1] = "small"
+    segment_map.loc[store_scale >= q2] = "large"
+
+    valid = df_valid[["store_id", "rto"]].copy()
+    valid["pred"] = pred_orig
+    valid["segment"] = valid["store_id"].map(segment_map).fillna("medium")
+
+    result: dict[str, float] = {}
+    for segment_name, part in valid.groupby("segment"):
+        if len(part) == 0:
+            continue
+        result[str(segment_name)] = float(mape(part["rto"].values, part["pred"].values))
+    return result
+
+
 def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") -> dict:
     set_seed(config.get("seed", 2026))
     exp_name = config["name"]
@@ -257,7 +289,9 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     t0 = time.time()
     target_transform = config.get("target_transform", "log1p")
     winsorize_q = config.get("winsorize_quantile", 1.0)
+    feature_groups = config.get("feature_groups")
     use_mape_weights = bool(config.get("mape_weights", False))
+    skip_final_train = bool(config.get("skip_final_train", False))
     seeds = config.get("seed_bag", [config.get("seed", 2026)])
     if isinstance(seeds, (int, str)):
         seeds = [int(seeds)]
@@ -271,9 +305,30 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     sanity_down = float(config.get("sanity_cap_down", 0.5))
     apply_cap_in_cv = bool(config.get("apply_sanity_cap_in_cv", True))
 
-    df_feat, feat_cols, cat_features, y_train_all, inv = _prepare(
-        train_path, target_transform, winsorize_q)
+    df_feat, feat_cols, cat_features, y_train_all, inv, feature_audit = _prepare(
+        train_path,
+        target_transform,
+        winsorize_q,
+        feature_groups=feature_groups,
+    )
     logger.info(f"Features: {len(feat_cols)}; rows: {len(df_feat)}")
+    logger.info(
+        "Аудит фичей: total_nan=%s, nan_feature_count=%s, all_nan=%s, inf_cols=%s",
+        feature_audit["total_nan"],
+        feature_audit["nan_feature_count"],
+        len(feature_audit["all_nan_columns"]),
+        len(feature_audit["inf_columns"]),
+    )
+    if feature_audit["all_nan_columns"]:
+        logger.warning(
+            "Полностью пустые фичи: %s",
+            feature_audit["all_nan_columns"][:10],
+        )
+    if feature_audit["inf_columns"]:
+        logger.warning(
+            "Фичи с inf: %s",
+            feature_audit["inf_columns"][:10],
+        )
 
     cv_val_months = config.get("cv_val_months")
     if cv_val_months is not None:
@@ -301,6 +356,7 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     fold_metrics = []
     trusted_fold_data: list[dict] = []
     oof_pred = np.full(len(df_feat), np.nan, dtype=np.float64)
+    feature_importances: list[pd.Series] = []
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -319,7 +375,7 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
         sw_v = None
 
-        pred_log_avg, best_iters, _ = _train_seed_bag(
+        pred_log_avg, best_iters, fold_model = _train_seed_bag(
             config["model"], config.get("params", {}),
             X_tr, y_tr, X_va, y_va_log, cat_features_in, sw, sw_v, seeds)
         pred_orig = inv(pred_log_avg)
@@ -335,16 +391,28 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         m_val = mape(y_va_orig, pred_orig)
         score = mape_to_score(m_val)
         oof_pred[va_idx] = pred_orig
+        segment_mapes = _compute_segment_mapes(
+            df_feat.loc[tr_idx, ["store_id", "rto"]],
+            df_feat.loc[va_idx, ["store_id", "rto"]],
+            pred_orig,
+        )
         fold_metrics.append({"fold": fold.name, "mape": m_val, "score": score,
                              "n_train": len(tr_idx), "n_val": len(va_idx),
-                             "best_iters": best_iters, "weight": float(w)})
+                             "best_iters": best_iters, "weight": float(w),
+                             "segment_mapes": segment_mapes})
         used_for_iters = w > iter_thr
         if used_for_iters:
             trusted_fold_data.append({"name": fold.name, "weight": float(w),
                                       "iters": list(best_iters)})
+        if hasattr(fold_model, "feature_importance"):
+            fold_fi = fold_model.feature_importance()
+            if fold_fi is not None:
+                feature_importances.append(fold_fi.rename(fold.name))
         logger.info(f"Fold {fold.name} (w={w}): MAPE={m_val:.4f} score={score:.3f} "
                     f"best_iters={best_iters} "
                     f"{'[USED FOR ITERS]' if used_for_iters else '[DIAG ONLY]'}")
+        if segment_mapes:
+            logger.info(f"Fold {fold.name} сегменты: {segment_mapes}")
 
     total_w = sum(f["weight"] for f in fold_metrics)
     if total_w > 0:
@@ -357,59 +425,72 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     logger.info(f"CV weighted MAPE = {mean_mape:.4f} | weighted score = {mean_score:.3f}")
     logger.info(f"CV simple   MAPE = {simple_mean_mape:.4f}")
 
-    # === FINAL TRAIN ===
-    tr_idx, pred_idx = predict_split(df_feat, predict_year=2025, predict_month=3)
-    tr_mask = ~y_train_all.iloc[tr_idx].isna().values
-    tr_idx = tr_idx[tr_mask]
-    X_tr = df_feat.loc[tr_idx, feat_cols]
-    y_tr = y_train_all.iloc[tr_idx].values
-    X_pr = df_feat.loc[pred_idx, feat_cols]
-    sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
+    mean_feature_importance = None
+    top_feature_importance = None
+    if feature_importances:
+        mean_feature_importance = (
+            pd.concat(feature_importances, axis=1)
+            .fillna(0.0)
+            .mean(axis=1)
+            .sort_values(ascending=False)
+        )
+        top_feature_importance = mean_feature_importance.head(20).to_dict()
 
-    nb_final = _weighted_geom_mean_iters(trusted_fold_data, final_iter_multiplier, logger=logger)
-    if nb_final is None:
-        all_data = [{"name": f["fold"], "weight": max(f["weight"], 1.0),
-                     "iters": f["best_iters"]} for f in fold_metrics]
-        nb_final = _weighted_geom_mean_iters(all_data, final_iter_multiplier, logger=logger)
-        logger.warning(f"No trusted folds for iter selection; fallback nb_final={nb_final}")
-
-    pred_log_avg_pred = []
+    submission_path = None
+    nb_final = None
     last_model = None
-    for s in seeds:
-        m_params = dict(config.get("params", {}))
-        m_params = _apply_num_boost_override(config["model"], m_params, nb_final)
-        m = get_model(config["model"], m_params)
-        m.fit(X_tr, y_tr, None, None, cat_features=cat_features_in,
-              sample_weight=sw, sample_weight_val=None, seed=s)
-        pred_log_avg_pred.append(m.predict(X_pr))
-        last_model = m
-    pred_log_avg = np.mean(pred_log_avg_pred, axis=0)
-    pred_orig = inv(pred_log_avg)
+    if not skip_final_train:
+        tr_idx, pred_idx = predict_split(df_feat, predict_year=2025, predict_month=3)
+        tr_mask = ~y_train_all.iloc[tr_idx].isna().values
+        tr_idx = tr_idx[tr_mask]
+        X_tr = df_feat.loc[tr_idx, feat_cols]
+        y_tr = y_train_all.iloc[tr_idx].values
+        X_pr = df_feat.loc[pred_idx, feat_cols]
+        sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
 
-    cap_dump = Path("experiments/reports") / f"{exp_name}_{ts}_sanity_cap_FINAL.csv"
-    pred_orig = _sanity_cap(
-        df_feat.loc[pred_idx], pred_orig, logger,
-        up_mul=sanity_up, down_mul=sanity_down,
-        dump_path=cap_dump, tag="FINAL",
-    )
+        nb_final = _weighted_geom_mean_iters(trusted_fold_data, final_iter_multiplier, logger=logger)
+        if nb_final is None:
+            all_data = [{"name": f["fold"], "weight": max(f["weight"], 1.0),
+                         "iters": f["best_iters"]} for f in fold_metrics]
+            nb_final = _weighted_geom_mean_iters(all_data, final_iter_multiplier, logger=logger)
+            logger.warning(f"No trusted folds for iter selection; fallback nb_final={nb_final}")
 
-    submission = pd.DataFrame({
-        "new_id": df_feat.loc[pred_idx, "store_id"].values.astype(int),
-        "rto": pred_orig,
-    }).sort_values("new_id").reset_index(drop=True)
+        pred_log_avg_pred = []
+        for s in seeds:
+            m_params = dict(config.get("params", {}))
+            m_params = _apply_num_boost_override(config["model"], m_params, nb_final)
+            m = get_model(config["model"], m_params)
+            m.fit(X_tr, y_tr, None, None, cat_features=cat_features_in,
+                  sample_weight=sw, sample_weight_val=None, seed=s)
+            pred_log_avg_pred.append(m.predict(X_pr))
+            last_model = m
+        pred_log_avg = np.mean(pred_log_avg_pred, axis=0)
+        pred_orig = inv(pred_log_avg)
 
-    # === HARD SUBMISSION VALIDATION ===
-    _validate_submission(submission, logger)
+        cap_dump = Path("experiments/reports") / f"{exp_name}_{ts}_sanity_cap_FINAL.csv"
+        pred_orig = _sanity_cap(
+            df_feat.loc[pred_idx], pred_orig, logger,
+            up_mul=sanity_up, down_mul=sanity_down,
+            dump_path=cap_dump, tag="FINAL",
+        )
 
-    sub_path = Path("experiments/predictions") / f"{exp_name}_{ts}.csv"
-    sub_path.parent.mkdir(parents=True, exist_ok=True)
-    submission.to_csv(sub_path, index=False)
-    _validate_submission_file(sub_path, logger)
+        submission = pd.DataFrame({
+            "new_id": df_feat.loc[pred_idx, "store_id"].values.astype(int),
+            "rto": pred_orig,
+        }).sort_values("new_id").reset_index(drop=True)
 
-    final_sub_path = Path("data/submissions") / f"{exp_name}_{ts}_test.csv"
-    final_sub_path.parent.mkdir(parents=True, exist_ok=True)
-    submission.to_csv(final_sub_path, index=False)
-    _validate_submission_file(final_sub_path, logger)
+        _validate_submission(submission, logger)
+
+        sub_path = Path("experiments/predictions") / f"{exp_name}_{ts}.csv"
+        sub_path.parent.mkdir(parents=True, exist_ok=True)
+        submission.to_csv(sub_path, index=False)
+        _validate_submission_file(sub_path, logger)
+
+        final_sub_path = Path("data/submissions") / f"{exp_name}_{ts}_test.csv"
+        final_sub_path.parent.mkdir(parents=True, exist_ok=True)
+        submission.to_csv(final_sub_path, index=False)
+        _validate_submission_file(final_sub_path, logger)
+        submission_path = str(sub_path)
 
     if config.get("save_oof", True):
         oof_path = Path("experiments/oof") / f"{exp_name}_{ts}_oof.parquet"
@@ -418,22 +499,25 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         oof_df["oof_pred"] = oof_pred
         oof_df.to_parquet(oof_path)
 
-    if hasattr(last_model, "feature_importance"):
-        fi = last_model.feature_importance()
-        if fi is not None:
-            fi_path = Path("experiments/reports") / f"{exp_name}_{ts}_fi.csv"
-            fi_path.parent.mkdir(parents=True, exist_ok=True)
-            fi.to_csv(fi_path)
+    if mean_feature_importance is not None:
+        fi_path = Path("experiments/reports") / f"{exp_name}_{ts}_fi.csv"
+        fi_path.parent.mkdir(parents=True, exist_ok=True)
+        mean_feature_importance.to_csv(fi_path)
 
+    march_fold = next((f for f in fold_metrics if f["fold"].endswith("-03")), None)
     result = {
         "name": exp_name, "timestamp": ts, "model": config["model"],
         "params": config.get("params", {}),
+        "feature_groups": feature_groups,
         "feature_count": len(feat_cols),
+        "feature_audit": feature_audit,
         "cv_folds": fold_metrics,
         "cv_mean_mape": mean_mape,
         "cv_mean_score": mean_score,
         "cv_simple_mean_mape": simple_mean_mape,
-        "submission_path": str(sub_path),
+        "march_fold_mape": None if march_fold is None else march_fold["mape"],
+        "top_feature_importance": top_feature_importance,
+        "submission_path": submission_path,
         "elapsed_seconds": time.time() - t0,
         "n_seeds": len(seeds),
         "final_num_iters": nb_final,
@@ -441,14 +525,16 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         "mape_weights": use_mape_weights,
         "target_transform": target_transform,
         "final_iter_multiplier": final_iter_multiplier,
+        "skip_final_train": skip_final_train,
         "sanity_cap_up": sanity_up,
         "sanity_cap_down": sanity_down,
         "apply_sanity_cap_in_cv": apply_cap_in_cv,
     }
     save_json(result, Path("experiments/reports") / f"{exp_name}_{ts}.json")
     logger.info(f"Done in {result['elapsed_seconds']:.1f}s")
-    try:
-        save_pickle(last_model, Path("experiments/models") / f"{exp_name}_{ts}.pkl")
-    except Exception as e:
-        logger.warning(f"pickle failed: {e}")
+    if last_model is not None:
+        try:
+            save_pickle(last_model, Path("experiments/models") / f"{exp_name}_{ts}.pkl")
+        except Exception as e:
+            logger.warning(f"pickle failed: {e}")
     return result
