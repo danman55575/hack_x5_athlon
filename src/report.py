@@ -65,7 +65,7 @@ def save_best_models(rows: list[dict], out_path: str | Path = "experiments/repor
     if 'rank' in df_all.columns:
         df_all = df_all.drop(columns=['rank'])
 
-    df_all = df_all.sort_values('cv_mape').drop_duplicates(subset=['name'], keep='first')
+    df_all = df_all.sort_values('cv_mape')
 
     # Sort by CV MAPE
     df_all = df_all.sort_values('cv_mape').reset_index(drop=True)
