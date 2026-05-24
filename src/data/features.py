@@ -121,7 +121,6 @@ def add_region_spendings(
 def add_external_macro_features(
     df: pd.DataFrame,
     spendings_file: str = "data/processed/region_spendings.csv",
-    inflation_file: str = "data/processed/inflation_coefficients.csv",
 ) -> pd.DataFrame:
     """Adds external macro features from inflation and regional spendings tables.
 
@@ -130,40 +129,6 @@ def add_external_macro_features(
     on a full `(region, year, month)` panel derived from the modeling frame.
     """
     df = df.copy()
-
-    inflation_path = Path(inflation_file)
-    if inflation_path.exists():
-        infl = pd.read_csv(inflation_path)
-        infl = infl.sort_values(["year", "month"]).reset_index(drop=True)
-        infl["inflation_lag_1"] = infl["inflation_coefficient"].shift(1)
-        infl["inflation_lag_12"] = infl["inflation_coefficient"].shift(12)
-        infl["inflation_mom_ratio"] = _safe_divide(
-            infl["inflation_coefficient"],
-            infl["inflation_lag_1"],
-        )
-        infl["inflation_yoy_ratio"] = _safe_divide(
-            infl["inflation_coefficient"],
-            infl["inflation_lag_12"],
-        )
-        infl["inflation_mom_delta"] = (
-            infl["inflation_coefficient"] - infl["inflation_lag_1"]
-        )
-        df = df.merge(
-            infl[
-                [
-                    "year",
-                    "month",
-                    "inflation_coefficient",
-                    "inflation_lag_1",
-                    "inflation_lag_12",
-                    "inflation_mom_ratio",
-                    "inflation_yoy_ratio",
-                    "inflation_mom_delta",
-                ]
-            ],
-            on=["year", "month"],
-            how="left",
-        )
 
     spendings_path = Path(spendings_file)
     if not spendings_path.exists():
@@ -218,53 +183,6 @@ def add_external_macro_features(
         region_panel["region_spendings_rmean_3"],
     )
 
-    country_panel = (
-        df[["year", "month", "t"]]
-        .drop_duplicates()
-        .sort_values("t")
-        .reset_index(drop=True)
-    )
-    country_means = (
-        spend.groupby(["year", "month"], as_index=False)["region_spendings_inflated"]
-        .mean()
-        .rename(columns={"region_spendings_inflated": "country_spendings_mean"})
-    )
-    country_panel = country_panel.merge(country_means, on=["year", "month"], how="left")
-    country_panel["country_spendings_lag_1"] = country_panel["country_spendings_mean"].shift(1)
-    country_panel["country_spendings_lag_12"] = country_panel["country_spendings_mean"].shift(12)
-    country_panel["country_spendings_mom_ratio"] = _safe_divide(
-        country_panel["country_spendings_lag_1"],
-        country_panel["country_spendings_mean"].shift(2),
-    )
-    country_panel["country_spendings_yoy_ratio"] = _safe_divide(
-        country_panel["country_spendings_lag_1"],
-        country_panel["country_spendings_lag_12"],
-    )
-
-    region_panel = region_panel.merge(
-        country_panel[
-            [
-                "year",
-                "month",
-                "country_spendings_mean",
-                "country_spendings_lag_1",
-                "country_spendings_lag_12",
-                "country_spendings_mom_ratio",
-                "country_spendings_yoy_ratio",
-            ]
-        ],
-        on=["year", "month"],
-        how="left",
-    )
-    region_panel["region_to_country_spendings_lag_1_ratio"] = _safe_divide(
-        region_panel["region_spendings_lag_1"],
-        region_panel["country_spendings_lag_1"],
-    )
-    region_panel["region_to_country_spendings_lag_12_ratio"] = _safe_divide(
-        region_panel["region_spendings_lag_12"],
-        region_panel["country_spendings_lag_12"],
-    )
-
     macro_cols = [
         "year",
         "month",
@@ -279,13 +197,6 @@ def add_external_macro_features(
         "region_spendings_mom_ratio",
         "region_spendings_yoy_ratio",
         "region_spendings_lag1_to_rmean3",
-        "country_spendings_mean",
-        "country_spendings_lag_1",
-        "country_spendings_lag_12",
-        "country_spendings_mom_ratio",
-        "country_spendings_yoy_ratio",
-        "region_to_country_spendings_lag_1_ratio",
-        "region_to_country_spendings_lag_12_ratio",
     ]
     return df.merge(region_panel[macro_cols], on=["year", "month", "region"], how="left")
 
