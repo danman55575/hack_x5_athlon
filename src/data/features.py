@@ -96,6 +96,19 @@ def _expanding_quantile_shifted(series: pd.Series, group_key: pd.Series, q: floa
     )
 
 
+def _with_columns(
+    df: pd.DataFrame,
+    columns: dict[str, pd.Series | np.ndarray],
+) -> pd.DataFrame:
+    if not columns:
+        return df
+    extra = pd.DataFrame(columns, index=df.index)
+    overlap = [col for col in extra.columns if col in df.columns]
+    if overlap:
+        df = df.drop(columns=overlap)
+    return pd.concat([df, extra], axis=1)
+
+
 def add_region_spendings(
     df: pd.DataFrame,
     spendings_file: str = "data/processed/region_spendings.csv",
@@ -199,9 +212,7 @@ def add_lag_features(
     group: str = "store_id",
 ) -> pd.DataFrame:
     g = df.groupby(group)[target]
-    for lag in lags:
-        df[f"{target}_lag_{lag}"] = g.shift(lag)
-    return df
+    return _with_columns(df, {f"{target}_lag_{lag}": g.shift(lag) for lag in lags})
 
 
 def add_rolling_features(
@@ -211,6 +222,7 @@ def add_rolling_features(
     group: str = "store_id",
 ) -> pd.DataFrame:
     shifted = df.groupby(group)[target].shift(1)
+    new_cols: dict[str, pd.Series | np.ndarray] = {}
     for window in windows:
         roll = shifted.groupby(df[group]).rolling(window=window, min_periods=max(1, window // 3))
         mean_col = f"{target}_rmean_{window}"
@@ -219,27 +231,30 @@ def add_rolling_features(
         max_col = f"{target}_rmax_{window}"
         median_col = f"{target}_rmedian_{window}"
 
-        df[mean_col] = roll.mean().reset_index(level=0, drop=True)
-        df[std_col] = roll.std().reset_index(level=0, drop=True)
-        df[min_col] = roll.min().reset_index(level=0, drop=True)
-        df[max_col] = roll.max().reset_index(level=0, drop=True)
-        df[median_col] = roll.median().reset_index(level=0, drop=True)
+        new_cols[mean_col] = roll.mean().reset_index(level=0, drop=True)
+        new_cols[std_col] = roll.std().reset_index(level=0, drop=True)
+        new_cols[min_col] = roll.min().reset_index(level=0, drop=True)
+        new_cols[max_col] = roll.max().reset_index(level=0, drop=True)
+        new_cols[median_col] = roll.median().reset_index(level=0, drop=True)
 
     for window in (2, 3, 4, 6, 12):
-        if f"{target}_rmean_{window}" in df.columns:
-            df[f"{target}_mean_{window}"] = df[f"{target}_rmean_{window}"]
+        rmean_col = f"{target}_rmean_{window}"
+        if rmean_col in new_cols:
+            new_cols[f"{target}_mean_{window}"] = new_cols[rmean_col]
     for window in (3, 6):
-        if f"{target}_rmedian_{window}" in df.columns:
-            df[f"{target}_median_{window}"] = df[f"{target}_rmedian_{window}"]
-        if f"{target}_rstd_{window}" in df.columns:
-            df[f"{target}_std_{window}"] = df[f"{target}_rstd_{window}"]
-    if f"{target}_rmin_6" in df.columns:
-        df[f"{target}_min_6"] = df[f"{target}_rmin_6"]
-    if f"{target}_rmax_6" in df.columns:
-        df[f"{target}_max_6"] = df[f"{target}_rmax_6"]
-    if f"{target}_mean_6" in df.columns and f"{target}_std_6" in df.columns:
-        df[f"{target}_cv_6"] = _safe_divide(df[f"{target}_std_6"], df[f"{target}_mean_6"])
-    return df
+        rmedian_col = f"{target}_rmedian_{window}"
+        rstd_col = f"{target}_rstd_{window}"
+        if rmedian_col in new_cols:
+            new_cols[f"{target}_median_{window}"] = new_cols[rmedian_col]
+        if rstd_col in new_cols:
+            new_cols[f"{target}_std_{window}"] = new_cols[rstd_col]
+    if f"{target}_rmin_6" in new_cols:
+        new_cols[f"{target}_min_6"] = new_cols[f"{target}_rmin_6"]
+    if f"{target}_rmax_6" in new_cols:
+        new_cols[f"{target}_max_6"] = new_cols[f"{target}_rmax_6"]
+    if f"{target}_mean_6" in new_cols and f"{target}_std_6" in new_cols:
+        new_cols[f"{target}_cv_6"] = _safe_divide(new_cols[f"{target}_std_6"], new_cols[f"{target}_mean_6"])
+    return _with_columns(df, new_cols)
 
 
 def add_diff_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
@@ -250,16 +265,20 @@ def add_diff_features(df: pd.DataFrame, target: str = "rto", group: str = "store
     lag6 = g.shift(6)
     lag12 = g.shift(12)
 
-    df[f"{target}_diff_1"] = lag1 - lag2
-    df[f"{target}_diff_2"] = lag2 - lag3
-    df[f"{target}_pct_1"] = _safe_divide(lag1 - lag2, lag2)
-    df[f"{target}_pct_2"] = _safe_divide(lag2 - lag3, lag3)
-    df[f"{target}_diff_6"] = lag1 - lag6
-    df[f"{target}_pct_6"] = _safe_divide(lag1 - lag6, lag6)
-    df[f"{target}_yoy_diff"] = lag1 - lag12
-    df[f"{target}_yoy_ratio"] = _safe_divide(lag1, lag12)
-    df[f"{target}_log_ratio_1_12"] = np.log1p(lag1) - np.log1p(lag12)
-    return df
+    return _with_columns(
+        df,
+        {
+            f"{target}_diff_1": lag1 - lag2,
+            f"{target}_diff_2": lag2 - lag3,
+            f"{target}_pct_1": _safe_divide(lag1 - lag2, lag2),
+            f"{target}_pct_2": _safe_divide(lag2 - lag3, lag3),
+            f"{target}_diff_6": lag1 - lag6,
+            f"{target}_pct_6": _safe_divide(lag1 - lag6, lag6),
+            f"{target}_yoy_diff": lag1 - lag12,
+            f"{target}_yoy_ratio": _safe_divide(lag1, lag12),
+            f"{target}_log_ratio_1_12": np.log1p(lag1) - np.log1p(lag12),
+        },
+    )
 
 
 def add_growth_ratio_features(
@@ -279,44 +298,49 @@ def add_growth_ratio_features(
     lag13 = g.shift(13)
     lag14 = g.shift(14)
 
-    df["log_growth_lag_1"] = np.log(_safe_divide(lag1, lag2))
-    df["log_growth_lag_2"] = np.log(_safe_divide(lag2, lag3))
-    df["log_growth_lag_4"] = np.log(_safe_divide(lag4, lag5))
-    df["log_growth_lag_6"] = np.log(_safe_divide(lag6, lag7))
-    df["abs_log_growth_lag_1"] = df["log_growth_lag_1"].abs()
-
-    df[f"{target}_lag_1_div_lag_2"] = _safe_divide(lag1, lag2)
-    df[f"{target}_lag_2_div_lag_4"] = _safe_divide(lag2, lag4)
+    new_cols: dict[str, pd.Series | np.ndarray] = {
+        "log_growth_lag_1": np.log(_safe_divide(lag1, lag2)),
+        "log_growth_lag_2": np.log(_safe_divide(lag2, lag3)),
+        "log_growth_lag_4": np.log(_safe_divide(lag4, lag5)),
+        "log_growth_lag_6": np.log(_safe_divide(lag6, lag7)),
+        f"{target}_lag_1_div_lag_2": _safe_divide(lag1, lag2),
+        f"{target}_lag_2_div_lag_4": _safe_divide(lag2, lag4),
+        f"{target}_lag_12_div_lag_13": _safe_divide(lag12, lag13),
+        f"{target}_lag_1_div_lag_12": _safe_divide(lag1, lag12),
+        f"{target}_lag_2_div_lag_14": _safe_divide(lag2, lag14),
+    }
+    new_cols["abs_log_growth_lag_1"] = pd.Series(new_cols["log_growth_lag_1"], copy=False).abs()
     if f"{target}_mean_3" in df.columns:
-        df[f"{target}_lag_1_div_mean_3"] = _safe_divide(lag1, df[f"{target}_mean_3"])
+        new_cols[f"{target}_lag_1_div_mean_3"] = _safe_divide(lag1, df[f"{target}_mean_3"])
     if f"{target}_mean_3" in df.columns and f"{target}_mean_12" in df.columns:
-        df[f"{target}_mean_3_div_mean_12"] = _safe_divide(
+        new_cols[f"{target}_mean_3_div_mean_12"] = _safe_divide(
             df[f"{target}_mean_3"],
             df[f"{target}_mean_12"],
         )
-
-    df[f"{target}_lag_12_div_lag_13"] = _safe_divide(lag12, lag13)
-    df[f"{target}_lag_1_div_lag_12"] = _safe_divide(lag1, lag12)
-    df[f"{target}_lag_2_div_lag_14"] = _safe_divide(lag2, lag14)
-    df[f"{target}_seasonal_ratio_baseline"] = lag1 * df[f"{target}_lag_12_div_lag_13"]
-    return df
+    new_cols[f"{target}_seasonal_ratio_baseline"] = (
+        lag1 * pd.Series(new_cols[f"{target}_lag_12_div_lag_13"], copy=False)
+    )
+    return _with_columns(df, new_cols)
 
 
 def add_seasonal_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
     g = df.groupby(group)[target]
-    df[f"{target}_same_month_1y"] = g.shift(12)
-    df[f"{target}_same_month_2y"] = g.shift(24)
-    df[f"{target}_same_month_mean"] = df[
-        [f"{target}_same_month_1y", f"{target}_same_month_2y"]
-    ].mean(axis=1)
-
+    same_month_1y = g.shift(12)
+    same_month_2y = g.shift(24)
     lag1 = g.shift(1)
     lag12 = g.shift(12)
     lag24 = g.shift(24)
     season_trend = _safe_divide(lag12, lag24)
-    df[f"{target}_naive_seasonal"] = df[f"{target}_same_month_1y"] * season_trend
-    df[f"{target}_ratio_lag1_sm1y"] = _safe_divide(lag1, df[f"{target}_same_month_1y"])
-    return df
+    return _with_columns(
+        df,
+        {
+            f"{target}_same_month_1y": same_month_1y,
+            f"{target}_same_month_2y": same_month_2y,
+            f"{target}_same_month_mean": pd.concat([same_month_1y, same_month_2y], axis=1).mean(axis=1),
+            f"{target}_naive_seasonal": same_month_1y * season_trend,
+            f"{target}_ratio_lag1_sm1y": _safe_divide(lag1, same_month_1y),
+        },
+    )
 
 
 def add_trend_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
@@ -336,46 +360,50 @@ def add_trend_features(df: pd.DataFrame, target: str = "rto", group: str = "stor
             return np.nan
         return float((x_centered * y_centered).sum() / denom)
 
+    new_cols: dict[str, pd.Series | np.ndarray] = {}
     for window in (3, 6, 12):
-        slope = (
+        new_cols[f"{target}_slope_{window}"] = (
             shifted.groupby(df[group])
             .rolling(window=window, min_periods=3)
             .apply(_rolling_slope, raw=False)
             .reset_index(level=0, drop=True)
         )
-        df[f"{target}_slope_{window}"] = slope
-    return df
+    return _with_columns(df, new_cols)
 
 
 def add_expanding_stats(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
     shifted = df.groupby(group)[target].shift(1)
     expanding = shifted.groupby(df[group]).expanding()
-    df[f"{target}_cummean"] = expanding.mean().reset_index(level=0, drop=True)
-    df[f"{target}_cumstd"] = expanding.std().reset_index(level=0, drop=True)
-    df[f"{target}_cummax"] = expanding.max().reset_index(level=0, drop=True)
-    df[f"{target}_cummin"] = expanding.min().reset_index(level=0, drop=True)
-    df[f"{target}_lag1_to_cummean"] = _safe_divide(
-        df.groupby(group)[target].shift(1),
-        df[f"{target}_cummean"],
+    cummean = expanding.mean().reset_index(level=0, drop=True)
+    return _with_columns(
+        df,
+        {
+            f"{target}_cummean": cummean,
+            f"{target}_cumstd": expanding.std().reset_index(level=0, drop=True),
+            f"{target}_cummax": expanding.max().reset_index(level=0, drop=True),
+            f"{target}_cummin": expanding.min().reset_index(level=0, drop=True),
+            f"{target}_lag1_to_cummean": _safe_divide(df.groupby(group)[target].shift(1), cummean),
+        },
     )
-    return df
 
 
 def add_dynamic_lags(df: pd.DataFrame, group: str = "store_id") -> pd.DataFrame:
+    new_cols: dict[str, pd.Series | np.ndarray] = {}
     for col in DYNAMIC_COLS:
         if col not in df.columns:
             continue
         g = df.groupby(group)[col]
-        df[f"{col}_lag_1"] = g.shift(1)
-        df[f"{col}_lag_2"] = g.shift(2)
-        df[f"{col}_lag_12"] = g.shift(12)
-        df[f"{col}_rmean_3"] = (
-            g.shift(1).groupby(df[group]).rolling(3, min_periods=1).mean().reset_index(level=0, drop=True)
+        shifted = g.shift(1)
+        new_cols[f"{col}_lag_1"] = shifted
+        new_cols[f"{col}_lag_2"] = g.shift(2)
+        new_cols[f"{col}_lag_12"] = g.shift(12)
+        new_cols[f"{col}_rmean_3"] = (
+            shifted.groupby(df[group]).rolling(3, min_periods=1).mean().reset_index(level=0, drop=True)
         )
-        df[f"{col}_rmean_12"] = (
-            g.shift(1).groupby(df[group]).rolling(12, min_periods=3).mean().reset_index(level=0, drop=True)
+        new_cols[f"{col}_rmean_12"] = (
+            shifted.groupby(df[group]).rolling(12, min_periods=3).mean().reset_index(level=0, drop=True)
         )
-    return df
+    return _with_columns(df, new_cols)
 
 
 def _is_leap_year(year: int) -> bool:
@@ -392,17 +420,21 @@ def _days_in_month_vec(years: np.ndarray, months: np.ndarray) -> np.ndarray:
 
 
 def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
-    df["month_sin"] = np.sin(2 * np.pi * df["month"] / 12).astype(np.float32)
-    df["month_cos"] = np.cos(2 * np.pi * df["month"] / 12).astype(np.float32)
-    df["is_jan"] = (df["month"] == 1).astype(np.int8)
-    df["is_feb"] = (df["month"] == 2).astype(np.int8)
-    df["is_mar"] = (df["month"] == 3).astype(np.int8)
-    df["is_dec"] = (df["month"] == 12).astype(np.int8)
-    df["quarter"] = ((df["month"] - 1) // 3 + 1).astype(np.int8)
-
-    df["days_in_month"] = _days_in_month_vec(df["year"].values, df["month"].values)
-    df["days_per_month_ratio"] = (df["days_in_month"].astype(np.float32) / 30.4375).astype(np.float32)
-    return df
+    days_in_month = _days_in_month_vec(df["year"].values, df["month"].values)
+    return _with_columns(
+        df,
+        {
+            "month_sin": np.sin(2 * np.pi * df["month"] / 12).astype(np.float32),
+            "month_cos": np.cos(2 * np.pi * df["month"] / 12).astype(np.float32),
+            "is_jan": (df["month"] == 1).astype(np.int8),
+            "is_feb": (df["month"] == 2).astype(np.int8),
+            "is_mar": (df["month"] == 3).astype(np.int8),
+            "is_dec": (df["month"] == 12).astype(np.int8),
+            "quarter": ((df["month"] - 1) // 3 + 1).astype(np.int8),
+            "days_in_month": days_in_month,
+            "days_per_month_ratio": (days_in_month.astype(np.float32) / 30.4375).astype(np.float32),
+        },
+    )
 
 
 def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
@@ -411,41 +443,39 @@ def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store
         return df
 
     g_dim = df.groupby(group)["days_in_month"]
-    df["days_in_month_lag_1"] = g_dim.shift(1).astype(np.float32)
-    df["days_in_month_lag_12"] = g_dim.shift(12).astype(np.float32)
-    df["days_ratio_curr_to_lag1"] = _safe_divide(
-        df["days_in_month"].astype(np.float32),
-        df["days_in_month_lag_1"],
-    ).astype(np.float32)
-    df["days_ratio_curr_to_lag12"] = _safe_divide(
-        df["days_in_month"].astype(np.float32),
-        df["days_in_month_lag_12"],
-    ).astype(np.float32)
-
+    days_in_month = df["days_in_month"].astype(np.float32)
+    days_in_month_lag_1 = g_dim.shift(1).astype(np.float32)
+    days_in_month_lag_12 = g_dim.shift(12).astype(np.float32)
+    new_cols: dict[str, pd.Series | np.ndarray] = {
+        "days_in_month_lag_1": days_in_month_lag_1,
+        "days_in_month_lag_12": days_in_month_lag_12,
+        "days_ratio_curr_to_lag1": _safe_divide(days_in_month, days_in_month_lag_1).astype(np.float32),
+        "days_ratio_curr_to_lag12": _safe_divide(days_in_month, days_in_month_lag_12).astype(np.float32),
+    }
     if f"{target}_lag_1" in df.columns:
-        df[f"{target}_lag_1_per_day"] = _safe_divide(
+        new_cols[f"{target}_lag_1_per_day"] = _safe_divide(
             df[f"{target}_lag_1"],
-            df["days_in_month_lag_1"],
+            days_in_month_lag_1,
         ).astype(np.float32)
-        df[f"{target}_lag_1_scaled_by_days"] = (
-            df[f"{target}_lag_1"] * df["days_ratio_curr_to_lag1"]
+        new_cols[f"{target}_lag_1_scaled_by_days"] = (
+            df[f"{target}_lag_1"] * pd.Series(new_cols["days_ratio_curr_to_lag1"], copy=False)
         ).astype(np.float32)
     if f"{target}_lag_12" in df.columns:
-        df[f"{target}_lag_12_per_day"] = _safe_divide(
+        new_cols[f"{target}_lag_12_per_day"] = _safe_divide(
             df[f"{target}_lag_12"],
-            df["days_in_month_lag_12"],
+            days_in_month_lag_12,
         ).astype(np.float32)
     if f"{target}_same_month_1y" in df.columns:
-        df[f"{target}_same_month_1y_per_day"] = _safe_divide(
+        new_cols[f"{target}_same_month_1y_per_day"] = _safe_divide(
             df[f"{target}_same_month_1y"],
-            df["days_in_month_lag_12"],
+            days_in_month_lag_12,
         ).astype(np.float32)
-    if f"{target}_lag_1_per_day" in df.columns and f"{target}_lag_12_per_day" in df.columns:
-        df[f"{target}_per_day_yoy_ratio"] = _safe_divide(
-            df[f"{target}_lag_1_per_day"],
-            df[f"{target}_lag_12_per_day"],
+    if f"{target}_lag_1_per_day" in new_cols and f"{target}_lag_12_per_day" in new_cols:
+        new_cols[f"{target}_per_day_yoy_ratio"] = _safe_divide(
+            new_cols[f"{target}_lag_1_per_day"],
+            new_cols[f"{target}_lag_12_per_day"],
         ).astype(np.float32)
-    return df
+    return _with_columns(df, new_cols)
 
 
 def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
