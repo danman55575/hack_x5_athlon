@@ -55,20 +55,11 @@ CALENDAR_COLS = [
     "days_in_month",
     "days_per_month_ratio",
     "days_in_month_lag_1",
-    "days_in_month_lag_12",
     "days_ratio_curr_to_lag1",
-    "days_ratio_curr_to_lag12",
 ]
 
 ANOMALY_FEATURES = [
     "abs_log_growth_lag_1",
-    "is_recent_jump_up",
-    "is_recent_jump_down",
-    "months_with_history",
-    "store_age_months",
-    "history_coverage_ratio",
-    "is_new_store",
-    "is_short_history_store",
 ]
 
 EXTERNAL_MACRO_PREFIXES = (
@@ -367,21 +358,6 @@ def add_expanding_stats(df: pd.DataFrame, target: str = "rto", group: str = "sto
         df.groupby(group)[target].shift(1),
         df[f"{target}_cummean"],
     )
-    return df
-
-
-def add_store_state_features(df: pd.DataFrame, group: str = "store_id") -> pd.DataFrame:
-    first_t = df.groupby(group)["t"].transform("min")
-    df["months_with_history"] = df.groupby(group).cumcount().astype(np.int16)
-    df["store_age_months"] = (df["t"] - first_t).astype(np.int16)
-    df["history_coverage_ratio"] = _safe_divide(
-        df["months_with_history"].astype(np.float32),
-        np.maximum(df["store_age_months"].astype(np.float32), 1.0),
-    ).astype(np.float32)
-    df["is_new_store"] = (df["months_with_history"] < 6).astype(np.int8)
-    df["is_short_history_store"] = (df["months_with_history"] < 12).astype(np.int8)
-    df["is_recent_jump_up"] = (df["log_growth_lag_1"] > np.log(1.15)).astype(np.int8)
-    df["is_recent_jump_down"] = (df["log_growth_lag_1"] < np.log(0.87)).astype(np.int8)
     return df
 
 
@@ -790,7 +766,6 @@ def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame,
     df = add_seasonal_features(df, target=target)
     df = add_trend_features(df, target=target)
     df = add_expanding_stats(df, target=target)
-    df = add_store_state_features(df)
     df = df.copy()
     df = add_dynamic_lags(df)
     df = add_calendar_features(df)
