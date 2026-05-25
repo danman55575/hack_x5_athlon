@@ -14,99 +14,7 @@ import pandas as pd
 from .loader import CAT_COLS, DYNAMIC_COLS
 
 
-_DAYS_IN_MONTH_BASE = np.array(
-    [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31],
-    dtype=np.int8,
-)
-
-STATIC_NUMERIC_COLS = [
-    "work_hours",
-    "population",
-    "households",
-    "foot_traffic",
-    "car_traffic",
-    "marketplaces_100",
-    "medical_300",
-    "schools_300",
-    "stops_300",
-    "grocery_500",
-    "p5_500",
-    "cashboxes",
-    "alco_flag",
-    "region_spendings_inflated",
-    "medical_300_clipped",
-    "stops_300_clipped",
-    "grocery_500_clipped",
-    "schools_300_clipped",
-    "marketplaces_100_clipped",
-    "foot_traffic_clipped",
-    "car_traffic_clipped",
-    "cancellations_clipped",
-]
-
-CALENDAR_COLS = [
-    "month_sin",
-    "month_cos",
-    "is_jan",
-    "is_feb",
-    "is_mar",
-    "is_dec",
-    "quarter",
-    "days_in_month",
-    "days_per_month_ratio",
-    "days_in_month_lag_1",
-    "days_ratio_curr_to_lag1",
-]
-
-ANOMALY_FEATURES = [
-    "abs_log_growth_lag_1",
-]
-
-EXTERNAL_MACRO_PREFIXES = (
-    "inflation_",
-    "region_spendings_",
-    "country_spendings_",
-    "region_to_country_spendings_",
-)
-
-
-def _safe_divide(num: pd.Series | np.ndarray, den: pd.Series | np.ndarray) -> pd.Series:
-    num_s = pd.Series(num, copy=False)
-    den_s = pd.Series(den, copy=False).replace(0, np.nan)
-    return num_s / den_s
-
-
-def _expanding_mean_shifted(series: pd.Series, group_key: pd.Series) -> pd.Series:
-    return (
-        series.groupby(group_key)
-        .expanding()
-        .mean()
-        .shift(1)
-        .reset_index(level=0, drop=True)
-    )
-
-
-def _expanding_quantile_shifted(series: pd.Series, group_key: pd.Series, q: float) -> pd.Series:
-    return (
-        series.groupby(group_key)
-        .expanding()
-        .quantile(q)
-        .shift(1)
-        .reset_index(level=0, drop=True)
-    )
-
-
-def _with_columns(
-    df: pd.DataFrame,
-    columns: dict[str, pd.Series | np.ndarray],
-) -> pd.DataFrame:
-    if not columns:
-        return df
-    extra = pd.DataFrame(columns, index=df.index)
-    overlap = [col for col in extra.columns if col in df.columns]
-    if overlap:
-        df = df.drop(columns=overlap)
-    return pd.concat([df, extra], axis=1)
+from .utils import *
 
 
 def add_region_spendings(
@@ -174,15 +82,15 @@ def add_external_macro_features(
         .mean()
         .reset_index(level=0, drop=True)
     )
-    region_panel["region_spendings_mom_ratio"] = _safe_divide(
+    region_panel["region_spendings_mom_ratio"] = safe_divide(
         region_panel["region_spendings_lag_1"],
         region_panel["region_spendings_lag_2"],
     )
-    region_panel["region_spendings_yoy_ratio"] = _safe_divide(
+    region_panel["region_spendings_yoy_ratio"] = safe_divide(
         region_panel["region_spendings_lag_1"],
         region_panel["region_spendings_lag_12"],
     )
-    region_panel["region_spendings_lag1_to_rmean3"] = _safe_divide(
+    region_panel["region_spendings_lag1_to_rmean3"] = safe_divide(
         region_panel["region_spendings_lag_1"],
         region_panel["region_spendings_rmean_3"],
     )
@@ -212,7 +120,7 @@ def add_lag_features(
     group: str = "store_id",
 ) -> pd.DataFrame:
     g = df.groupby(group)[target]
-    return _with_columns(df, {f"{target}_lag_{lag}": g.shift(lag) for lag in lags})
+    return with_columns(df, {f"{target}_lag_{lag}": g.shift(lag) for lag in lags})
 
 
 def add_rolling_features(
@@ -253,8 +161,8 @@ def add_rolling_features(
     if f"{target}_rmax_6" in new_cols:
         new_cols[f"{target}_max_6"] = new_cols[f"{target}_rmax_6"]
     if f"{target}_mean_6" in new_cols and f"{target}_std_6" in new_cols:
-        new_cols[f"{target}_cv_6"] = _safe_divide(new_cols[f"{target}_std_6"], new_cols[f"{target}_mean_6"])
-    return _with_columns(df, new_cols)
+        new_cols[f"{target}_cv_6"] = safe_divide(new_cols[f"{target}_std_6"], new_cols[f"{target}_mean_6"])
+    return with_columns(df, new_cols)
 
 
 def add_diff_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
@@ -265,17 +173,17 @@ def add_diff_features(df: pd.DataFrame, target: str = "rto", group: str = "store
     lag6 = g.shift(6)
     lag12 = g.shift(12)
 
-    return _with_columns(
+    return with_columns(
         df,
         {
             f"{target}_diff_1": lag1 - lag2,
             f"{target}_diff_2": lag2 - lag3,
-            f"{target}_pct_1": _safe_divide(lag1 - lag2, lag2),
-            f"{target}_pct_2": _safe_divide(lag2 - lag3, lag3),
+            f"{target}_pct_1": safe_divide(lag1 - lag2, lag2),
+            f"{target}_pct_2": safe_divide(lag2 - lag3, lag3),
             f"{target}_diff_6": lag1 - lag6,
-            f"{target}_pct_6": _safe_divide(lag1 - lag6, lag6),
+            f"{target}_pct_6": safe_divide(lag1 - lag6, lag6),
             f"{target}_yoy_diff": lag1 - lag12,
-            f"{target}_yoy_ratio": _safe_divide(lag1, lag12),
+            f"{target}_yoy_ratio": safe_divide(lag1, lag12),
             f"{target}_log_ratio_1_12": np.log1p(lag1) - np.log1p(lag12),
         },
     )
@@ -299,28 +207,28 @@ def add_growth_ratio_features(
     lag14 = g.shift(14)
 
     new_cols: dict[str, pd.Series | np.ndarray] = {
-        "log_growth_lag_1": np.log(_safe_divide(lag1, lag2)),
-        "log_growth_lag_2": np.log(_safe_divide(lag2, lag3)),
-        "log_growth_lag_4": np.log(_safe_divide(lag4, lag5)),
-        "log_growth_lag_6": np.log(_safe_divide(lag6, lag7)),
-        f"{target}_lag_1_div_lag_2": _safe_divide(lag1, lag2),
-        f"{target}_lag_2_div_lag_4": _safe_divide(lag2, lag4),
-        f"{target}_lag_12_div_lag_13": _safe_divide(lag12, lag13),
-        f"{target}_lag_1_div_lag_12": _safe_divide(lag1, lag12),
-        f"{target}_lag_2_div_lag_14": _safe_divide(lag2, lag14),
+        "log_growth_lag_1": np.log(safe_divide(lag1, lag2)),
+        "log_growth_lag_2": np.log(safe_divide(lag2, lag3)),
+        "log_growth_lag_4": np.log(safe_divide(lag4, lag5)),
+        "log_growth_lag_6": np.log(safe_divide(lag6, lag7)),
+        f"{target}_lag_1_div_lag_2": safe_divide(lag1, lag2),
+        f"{target}_lag_2_div_lag_4": safe_divide(lag2, lag4),
+        f"{target}_lag_12_div_lag_13": safe_divide(lag12, lag13),
+        f"{target}_lag_1_div_lag_12": safe_divide(lag1, lag12),
+        f"{target}_lag_2_div_lag_14": safe_divide(lag2, lag14),
     }
     new_cols["abs_log_growth_lag_1"] = pd.Series(new_cols["log_growth_lag_1"], copy=False).abs()
     if f"{target}_mean_3" in df.columns:
-        new_cols[f"{target}_lag_1_div_mean_3"] = _safe_divide(lag1, df[f"{target}_mean_3"])
+        new_cols[f"{target}_lag_1_div_mean_3"] = safe_divide(lag1, df[f"{target}_mean_3"])
     if f"{target}_mean_3" in df.columns and f"{target}_mean_12" in df.columns:
-        new_cols[f"{target}_mean_3_div_mean_12"] = _safe_divide(
+        new_cols[f"{target}_mean_3_div_mean_12"] = safe_divide(
             df[f"{target}_mean_3"],
             df[f"{target}_mean_12"],
         )
     new_cols[f"{target}_seasonal_ratio_baseline"] = (
         lag1 * pd.Series(new_cols[f"{target}_lag_12_div_lag_13"], copy=False)
     )
-    return _with_columns(df, new_cols)
+    return with_columns(df, new_cols)
 
 
 def add_seasonal_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
@@ -330,15 +238,15 @@ def add_seasonal_features(df: pd.DataFrame, target: str = "rto", group: str = "s
     lag1 = g.shift(1)
     lag12 = g.shift(12)
     lag24 = g.shift(24)
-    season_trend = _safe_divide(lag12, lag24)
-    return _with_columns(
+    season_trend = safe_divide(lag12, lag24)
+    return with_columns(
         df,
         {
             f"{target}_same_month_1y": same_month_1y,
             f"{target}_same_month_2y": same_month_2y,
             f"{target}_same_month_mean": pd.concat([same_month_1y, same_month_2y], axis=1).mean(axis=1),
             f"{target}_naive_seasonal": same_month_1y * season_trend,
-            f"{target}_ratio_lag1_sm1y": _safe_divide(lag1, same_month_1y),
+            f"{target}_ratio_lag1_sm1y": safe_divide(lag1, same_month_1y),
         },
     )
 
@@ -368,21 +276,21 @@ def add_trend_features(df: pd.DataFrame, target: str = "rto", group: str = "stor
             .apply(_rolling_slope, raw=False)
             .reset_index(level=0, drop=True)
         )
-    return _with_columns(df, new_cols)
+    return with_columns(df, new_cols)
 
 
 def add_expanding_stats(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
     shifted = df.groupby(group)[target].shift(1)
     expanding = shifted.groupby(df[group]).expanding()
     cummean = expanding.mean().reset_index(level=0, drop=True)
-    return _with_columns(
+    return with_columns(
         df,
         {
             f"{target}_cummean": cummean,
             f"{target}_cumstd": expanding.std().reset_index(level=0, drop=True),
             f"{target}_cummax": expanding.max().reset_index(level=0, drop=True),
             f"{target}_cummin": expanding.min().reset_index(level=0, drop=True),
-            f"{target}_lag1_to_cummean": _safe_divide(df.groupby(group)[target].shift(1), cummean),
+            f"{target}_lag1_to_cummean": safe_divide(df.groupby(group)[target].shift(1), cummean),
         },
     )
 
@@ -403,25 +311,12 @@ def add_dynamic_lags(df: pd.DataFrame, group: str = "store_id") -> pd.DataFrame:
         new_cols[f"{col}_rmean_12"] = (
             shifted.groupby(df[group]).rolling(12, min_periods=3).mean().reset_index(level=0, drop=True)
         )
-    return _with_columns(df, new_cols)
-
-
-def _is_leap_year(year: int) -> bool:
-    return (year % 4 == 0) and (year % 100 != 0 or year % 400 == 0)
-
-
-def _days_in_month_vec(years: np.ndarray, months: np.ndarray) -> np.ndarray:
-    months = np.asarray(months, dtype=np.int64)
-    years = np.asarray(years, dtype=np.int64)
-    result = _DAYS_IN_MONTH_BASE[months - 1].astype(np.int8).copy()
-    leap_mask = np.array([_is_leap_year(int(year)) for year in years], dtype=bool)
-    result[(months == 2) & leap_mask] = np.int8(29)
-    return result
+    return with_columns(df, new_cols)
 
 
 def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
-    days_in_month = _days_in_month_vec(df["year"].values, df["month"].values)
-    return _with_columns(
+    days_in_month = days_in_month_vec(df["year"].values, df["month"].values)
+    return with_columns(
         df,
         {
             "month_sin": np.sin(2 * np.pi * df["month"] / 12).astype(np.float32),
@@ -449,11 +344,11 @@ def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store
     new_cols: dict[str, pd.Series | np.ndarray] = {
         "days_in_month_lag_1": days_in_month_lag_1,
         "days_in_month_lag_12": days_in_month_lag_12,
-        "days_ratio_curr_to_lag1": _safe_divide(days_in_month, days_in_month_lag_1).astype(np.float32),
-        "days_ratio_curr_to_lag12": _safe_divide(days_in_month, days_in_month_lag_12).astype(np.float32),
+        "days_ratio_curr_to_lag1": safe_divide(days_in_month, days_in_month_lag_1).astype(np.float32),
+        "days_ratio_curr_to_lag12": safe_divide(days_in_month, days_in_month_lag_12).astype(np.float32),
     }
     if f"{target}_lag_1" in df.columns:
-        new_cols[f"{target}_lag_1_per_day"] = _safe_divide(
+        new_cols[f"{target}_lag_1_per_day"] = safe_divide(
             df[f"{target}_lag_1"],
             days_in_month_lag_1,
         ).astype(np.float32)
@@ -461,21 +356,21 @@ def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store
             df[f"{target}_lag_1"] * pd.Series(new_cols["days_ratio_curr_to_lag1"], copy=False)
         ).astype(np.float32)
     if f"{target}_lag_12" in df.columns:
-        new_cols[f"{target}_lag_12_per_day"] = _safe_divide(
+        new_cols[f"{target}_lag_12_per_day"] = safe_divide(
             df[f"{target}_lag_12"],
             days_in_month_lag_12,
         ).astype(np.float32)
     if f"{target}_same_month_1y" in df.columns:
-        new_cols[f"{target}_same_month_1y_per_day"] = _safe_divide(
+        new_cols[f"{target}_same_month_1y_per_day"] = safe_divide(
             df[f"{target}_same_month_1y"],
             days_in_month_lag_12,
         ).astype(np.float32)
     if f"{target}_lag_1_per_day" in new_cols and f"{target}_lag_12_per_day" in new_cols:
-        new_cols[f"{target}_per_day_yoy_ratio"] = _safe_divide(
+        new_cols[f"{target}_per_day_yoy_ratio"] = safe_divide(
             new_cols[f"{target}_lag_1_per_day"],
             new_cols[f"{target}_lag_12_per_day"],
         ).astype(np.float32)
-    return _with_columns(df, new_cols)
+    return with_columns(df, new_cols)
 
 
 def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
@@ -487,18 +382,18 @@ def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFram
     df["_rto_lag13"] = df.groupby("store_id")[target].shift(13)
     df = df.sort_values("t", kind="mergesort").reset_index(drop=True)
 
-    yoy = _safe_divide(df["_rto_lag1"], df["_rto_lag12"])
+    yoy = safe_divide(df["_rto_lag1"], df["_rto_lag12"])
     for key in ["region", "locality", "area_cat", "open_date_cat"]:
         if key not in df.columns:
             continue
-        df[f"grp_{key}_lag1_mean"] = _expanding_mean_shifted(df["_rto_lag1"], df[key])
-        df[f"grp_{key}_lag1_median"] = _expanding_quantile_shifted(df["_rto_lag1"], df[key], 0.5)
-        df[f"grp_{key}_yoy_mean"] = _expanding_mean_shifted(yoy, df[key])
-        df[f"grp_{key}_yoy_median"] = _expanding_quantile_shifted(yoy, df[key], 0.5)
+        df[f"grp_{key}_lag1_mean"] = expanding_mean_shifted(df["_rto_lag1"], df[key])
+        df[f"grp_{key}_lag1_median"] = expanding_quantile_shifted(df["_rto_lag1"], df[key], 0.5)
+        df[f"grp_{key}_yoy_mean"] = expanding_mean_shifted(yoy, df[key])
+        df[f"grp_{key}_yoy_median"] = expanding_quantile_shifted(yoy, df[key], 0.5)
 
     df["grp_all_lag1_mean"] = df.groupby("t")["_rto_lag1"].transform("mean")
     df["grp_all_lag12_mean"] = df.groupby("t")["_rto_lag12"].transform("mean")
-    yoy_macro = _safe_divide(df["_rto_lag1"], df["_rto_lag13"])
+    yoy_macro = safe_divide(df["_rto_lag1"], df["_rto_lag13"])
     df["grp_all_yoy_macro_mean"] = yoy_macro.groupby(df["t"]).transform("mean")
     df["grp_all_yoy_macro_median"] = yoy_macro.groupby(df["t"]).transform("median")
 
@@ -564,7 +459,7 @@ def _compute_historical_march_feb_ratio(
 
     ratio_df = value_pivot.merge(count_pivot, on=group_cols + ["year"], how="left")
     ratio_df = ratio_df.dropna(subset=["feb_value", "mar_value"])
-    ratio_df[f"{prefix}_march_feb_ratio"] = _safe_divide(
+    ratio_df[f"{prefix}_march_feb_ratio"] = safe_divide(
         ratio_df["mar_value"],
         ratio_df["feb_value"],
     )
@@ -578,7 +473,7 @@ def _compute_historical_march_feb_ratio(
     pair_count_col = f"{prefix}_march_feb_ratio_pair_count"
 
     if group_cols:
-        ratio_df[ratio_col] = _expanding_mean_shifted(
+        ratio_df[ratio_col] = expanding_mean_shifted(
             ratio_df[ratio_col],
             ratio_df[group_cols].astype(str).agg("||".join, axis=1),
         )

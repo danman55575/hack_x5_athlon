@@ -5,10 +5,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .loader import RENAME_MAP, DYNAMIC_COLS, STORE_STATIC_COLS, BASE_YEAR  # noqa: F401
+from .utils import RENAME_MAP, BASE_YEAR  # noqa: F401
 
-
-_TRULY_STATIC_COLS = ["open_date_cat", "area_cat", "locality", "region"]
 
 
 def clean_outliers(df: pd.DataFrame) -> pd.DataFrame:
@@ -41,18 +39,6 @@ def correct_population(df: pd.DataFrame) -> pd.DataFrame:
     df['_median_pop'] = df['_median_pop'].fillna(100)
     df['population'] = df['_median_pop'].astype(df['population'].dtype)
     df = df.drop(columns=['_median_pop'])
-    return df
-
-
-def make_static_consistent(df: pd.DataFrame) -> pd.DataFrame:
-    """Применяется только к truly-static категориальным колонкам.
-    "first" вместо "last" — нет утечки из будущего.
-    Time-varying численные признаки (population/traffic/infrastructure) НЕ трогаем."""
-    df = df.sort_values(["store_id", "t"]).copy()
-    for c in _TRULY_STATIC_COLS:
-        if c not in df.columns:
-            continue
-        df[c] = df.groupby("store_id")[c].transform("first")
     return df
 
 
@@ -97,7 +83,6 @@ def main():
     df["t"] = ((df["year"] - BASE_YEAR) * 12 + (df["month"] - 1)).astype(np.int16)
     df = df.sort_values(["store_id", "t"]).reset_index(drop=True)
 
-    df = make_static_consistent(df)
     df = adjust_rto_for_inflation(df)
     df = correct_population(df)
     df = clean_outliers(df)

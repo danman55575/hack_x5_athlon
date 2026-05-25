@@ -1,46 +1,7 @@
 from pathlib import Path
 import pandas as pd
 import numpy as np
-
-# ВАЖНО: фиксированная базовая точка отсчёта времени, чтобы значение `t`
-# не зависело от того, какие именно строки попали в текущий запуск.
-BASE_YEAR: int = 2023
-
-RENAME_MAP = {
-    "new_id": "store_id",
-    "Год": "year",
-    "Месяц": "month",
-    "Среднее количество промо товаров в чеке": "promo_per_check",
-    "Среднее количество товаров в чеке": "items_per_check",
-    "Среднее количество отмен": "cancellations",
-    "Рабочие часы в день": "work_hours",
-    "Дата открытия, категориальный": "open_date_cat",
-    "Торговая площадь, категориальный": "area_cat",
-    "Населенный пункт": "locality",
-    "Регион": "region",
-    "Численность населения": "population",
-    "Количество домохозяйств": "households",
-    "Трафик пеший, в час": "foot_traffic",
-    "Трафик авто, в час": "car_traffic",
-    "Маркетплейсы, доставки, постаматы (100 м)": "marketplaces_100",
-    "Медицинские уч. и аптеки (300 м)": "medical_300",
-    "Школы (300 м)": "schools_300",
-    "Остановки (300 м)": "stops_300",
-    "Продуктовые магазины (500 м)": "grocery_500",
-    "Пятерочки (500 м)": "p5_500",
-    "Количество касс": "cashboxes",
-    "Флаг алкогольной лицензии": "alco_flag",
-    "РТО": "rto",
-}
-
-CAT_COLS = ["open_date_cat", "area_cat", "locality", "region"]
-STORE_STATIC_COLS = [
-    "open_date_cat", "area_cat", "locality", "region",
-    "population", "households", "foot_traffic", "car_traffic",
-    "marketplaces_100", "medical_300", "schools_300", "stops_300",
-    "grocery_500", "p5_500", "cashboxes", "alco_flag",
-]
-DYNAMIC_COLS = ["promo_per_check", "items_per_check", "cancellations"]
+from .utils import *
 
 
 def load_raw(train_path: str | Path = "data/processed/v2.parquet") -> pd.DataFrame:
