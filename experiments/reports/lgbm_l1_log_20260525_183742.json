@@ -1,0 +1,158 @@
+{
+  "name": "lgbm_l1_log",
+  "timestamp": "20260525_183742",
+  "model": "lightgbm",
+  "params": {
+    "objective": "regression_l1",
+    "metric": "mae",
+    "learning_rate": 0.03,
+    "num_leaves": 95,
+    "min_data_in_leaf": 80,
+    "feature_fraction": 0.8,
+    "bagging_fraction": 0.85,
+    "bagging_freq": 1,
+    "lambda_l1": 0.1,
+    "lambda_l2": 1.5,
+    "num_boost_round": 12000,
+    "early_stopping_rounds": 300,
+    "num_threads": 4,
+    "verbose": -1
+  },
+  "feature_groups": null,
+  "feature_count": 196,
+  "feature_audit": {
+    "feature_count": 196,
+    "rows": 503739,
+    "nan_feature_count": 164,
+    "total_nan": 20261643,
+    "all_nan_columns": [],
+    "inf_columns": [],
+    "top_nan_columns": {
+      "global_march_feb_ratio": 485082,
+      "region_march_feb_ratio": 466505,
+      "city_march_feb_ratio": 466469,
+      "locality_march_feb_ratio": 466426,
+      "rto_lag_25": 466425,
+      "rto_lag_24": 447768,
+      "rto_same_month_2y": 447768,
+      "rto_naive_seasonal": 447768,
+      "rto_lag_23": 429111,
+      "rto_lag_22": 410454,
+      "rto_lag_21": 391797,
+      "rto_lag_20": 373140,
+      "rto_lag_19": 354483,
+      "rto_lag_18": 335826,
+      "rto_lag_17": 317169,
+      "rto_lag_16": 298512,
+      "rto_lag_15": 279855,
+      "rto_lag_2_div_lag_14": 261198,
+      "rto_lag_14": 261198,
+      "rto_lag_13": 242541
+    },
+    "top_inf_columns": {}
+  },
+  "cv_folds": [
+    {
+      "fold": "2025-02",
+      "mape": 5.442880467968837,
+      "score": 89.4104885419483,
+      "n_train": 466425,
+      "n_val": 18657,
+      "best_iters": [
+        2870
+      ],
+      "weight": 3.0,
+      "segment_mapes": {
+        "large": 6.0199611786027285,
+        "medium": 5.299447594325449,
+        "small": 5.00923263097833
+      }
+    },
+    {
+      "fold": "2024-12",
+      "mape": 3.976475006661066,
+      "score": 92.20517352146388,
+      "n_train": 429111,
+      "n_val": 18657,
+      "best_iters": [
+        342
+      ],
+      "weight": 2.0,
+      "segment_mapes": {
+        "large": 3.8719668815340973,
+        "medium": 3.9378005183309104,
+        "small": 4.11965762011819
+      }
+    },
+    {
+      "fold": "2024-09",
+      "mape": 5.000589922940492,
+      "score": 90.24887914989316,
+      "n_train": 373140,
+      "n_val": 18657,
+      "best_iters": [
+        680
+      ],
+      "weight": 1.0,
+      "segment_mapes": {
+        "large": 5.19545063321017,
+        "medium": 4.908300257845559,
+        "small": 4.898018877765746
+      }
+    },
+    {
+      "fold": "2024-03",
+      "mape": 6.268091439010657,
+      "score": 87.85670682485667,
+      "n_train": 261198,
+      "n_val": 18657,
+      "best_iters": [
+        264
+      ],
+      "weight": 0.0,
+      "segment_mapes": {
+        "large": 7.080766875891123,
+        "medium": 7.524559280363998,
+        "small": 4.198948160776856
+      }
+    }
+  ],
+  "cv_mean_mape": 4.8803635566948556,
+  "cv_mean_score": 90.48178196977763,
+  "cv_simple_mean_mape": 5.172009209145263,
+  "march_fold_mape": 6.268091439010657,
+  "top_feature_importance": {
+    "rto_lag_1_per_day": 8899917.413329124,
+    "rto_lag_1_scaled_by_days": 4818036.647748351,
+    "locality": 1434358.4948376417,
+    "region": 280614.16691946983,
+    "month_cos": 255174.9812502861,
+    "grp_all_lag1_mean": 236215.57390534878,
+    "is_jan": 207705.55360102654,
+    "rto_seasonal_ratio_baseline": 189215.86959004402,
+    "rto_rmin_2": 169741.10242974758,
+    "rto_lag_1": 160588.54513907433,
+    "rto_lag_12_div_lag_13": 137377.34888279438,
+    "households": 92360.78819060326,
+    "rto_lag_7": 87487.64129626751,
+    "rto_rmean_2": 82978.30770409107,
+    "month_sin": 79689.10740947723,
+    "rto_slope_12": 69747.20667672157,
+    "rto_diff_1": 69707.55211997032,
+    "cashboxes": 69685.52009046078,
+    "non_working_days": 67464.44904410839,
+    "rto_lag_11": 64654.66473519802
+  },
+  "submission_path": "experiments\\predictions\\lgbm_l1_log_20260525_183742.csv",
+  "elapsed_seconds": 1671.2205007076263,
+  "n_seeds": 1,
+  "final_num_iters": 3156,
+  "use_cat": true,
+  "mape_weights": false,
+  "target_transform": "log1p",
+  "final_iter_multiplier": 1.1,
+  "skip_final_train": false,
+  "sanity_cap_up": 2.0,
+  "sanity_cap_down": 0.5,
+  "apply_sanity_cap_in_cv": true
+}

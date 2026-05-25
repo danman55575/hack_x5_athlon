@@ -4,6 +4,7 @@ seed: 2026
 target_transform: log1p
 use_cat: true
 save_oof: true
+mape_weights: false
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
 cv_fold_weights: [3.0, 1.5, 1.0, 2.0]
 fold_iter_use_weights_gt: 0.5
@@ -16,10 +17,10 @@ apply_sanity_cap_in_cv: true
 params:
   loss_function: MAE
   eval_metric: MAE
-  learning_rate: 0.04
-  depth: 7
-  l2_leaf_reg: 4.0
-  random_strength: 1.0
+  learning_rate: 0.0208664638674231246
+  depth: 5
+  l2_leaf_reg: 3.08715732897385031
+  random_strength: 3.39303627398827067
   iterations: 10000
   od_type: Iter
   od_wait: 300

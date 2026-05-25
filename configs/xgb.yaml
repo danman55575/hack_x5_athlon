@@ -2,7 +2,9 @@ name: xgb_l1_log
 model: xgboost
 seed: 2026
 target_transform: log1p
-use_cat: false
+n_trials: 80
+mape_weights: false
+use_cat: true
 save_oof: true
 cv_val_months: [[2025, 2], [2024, 12], [2024, 9], [2024, 3]]
 cv_fold_weights: [3.0, 1.5, 1.0, 2.0]
@@ -16,13 +18,13 @@ apply_sanity_cap_in_cv: true
 params:
   objective: reg:absoluteerror
   eval_metric: mae
-  learning_rate: 0.03
+  learning_rate: 0.052943912093673315
   max_depth: 7
-  min_child_weight: 12
-  subsample: 0.85
-  colsample_bytree: 0.85
-  reg_lambda: 1.5
-  reg_alpha: 0.1
+  min_child_weight: 6.2053281457818965
+  subsample: 0.8561202403254246
+  colsample_bytree: 0.9906490864849993
+  reg_lambda: 0.011396244718004385
+  reg_alpha: 0.0057225326772745826
   tree_method: hist
   nthread: 4
   num_boost_round: 12000

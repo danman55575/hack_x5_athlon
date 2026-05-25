@@ -43,13 +43,6 @@ STATIC_NUMERIC_COLS = [
     "work_hours",
     "population",
     "households",
-    "foot_traffic",
-    "car_traffic",
-    "marketplaces_100",
-    "medical_300",
-    "schools_300",
-    "stops_300",
-    "grocery_500",
     "p5_500",
     "cashboxes",
     "alco_flag",
@@ -61,7 +54,6 @@ STATIC_NUMERIC_COLS = [
     "marketplaces_100_clipped",
     "foot_traffic_clipped",
     "car_traffic_clipped",
-    "cancellations_clipped",
 ]
 
 CALENDAR_COLS = [
@@ -69,7 +61,6 @@ CALENDAR_COLS = [
     "month_cos",
     "is_jan",
     "is_feb",
-    "is_mar",
     "is_dec",
     "quarter",
     "days_in_month",
@@ -83,7 +74,6 @@ ANOMALY_FEATURES = [
 ]
 
 EXTERNAL_MACRO_PREFIXES = (
-    "inflation_",
     "region_spendings_",
     "country_spendings_",
     "region_to_country_spendings_",

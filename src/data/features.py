@@ -11,9 +11,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .loader import CAT_COLS, DYNAMIC_COLS
-
-
 from .utils import *
 
 
@@ -116,7 +113,7 @@ def add_external_macro_features(
 def add_lag_features(
     df: pd.DataFrame,
     target: str = "rto",
-    lags: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 9, 10, 12, 13, 14, 15, 16, 24, 25),
+    lags: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25),
     group: str = "store_id",
 ) -> pd.DataFrame:
     g = df.groupby(group)[target]
@@ -235,7 +232,6 @@ def add_seasonal_features(df: pd.DataFrame, target: str = "rto", group: str = "s
     g = df.groupby(group)[target]
     same_month_1y = g.shift(12)
     same_month_2y = g.shift(24)
-    lag1 = g.shift(1)
     lag12 = g.shift(12)
     lag24 = g.shift(24)
     season_trend = safe_divide(lag12, lag24)
@@ -246,7 +242,6 @@ def add_seasonal_features(df: pd.DataFrame, target: str = "rto", group: str = "s
             f"{target}_same_month_2y": same_month_2y,
             f"{target}_same_month_mean": pd.concat([same_month_1y, same_month_2y], axis=1).mean(axis=1),
             f"{target}_naive_seasonal": same_month_1y * season_trend,
-            f"{target}_ratio_lag1_sm1y": safe_divide(lag1, same_month_1y),
         },
     )
 
@@ -328,14 +323,12 @@ def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
             "month_cos": np.cos(2 * np.pi * df["month"] / 12).astype(np.float32),
             "is_jan": (df["month"] == 1).astype(np.int8),
             "is_feb": (df["month"] == 2).astype(np.int8),
-            "is_mar": (df["month"] == 3).astype(np.int8),
             "is_dec": (df["month"] == 12).astype(np.int8),
             "quarter": ((df["month"] - 1) // 3 + 1).astype(np.int8),
             "non_working_days": non_working_vec.astype(np.int8),
             "days_in_month": days_in_month.astype(np.int8),
         },
     )
-
 
 
 def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
@@ -413,13 +406,11 @@ def add_group_seasonality_features(df: pd.DataFrame, target: str = "rto") -> pd.
     df = compute_historical_march_feb_ratio(df, target, [], "global")
     for prefix, group_cols in (
         ("region", ["region"]),
-        ("area", ["area_cat"]),
         ("locality", ["locality"]),
     ):
         df = compute_historical_march_feb_ratio(df, target, group_cols, prefix)
 
     df["region_march_feb_ratio"] = df["region_march_feb_ratio"].fillna(df["global_march_feb_ratio"])
-    df["area_march_feb_ratio"] = df["area_march_feb_ratio"].fillna(df["global_march_feb_ratio"])
 
     use_locality = df["locality_march_feb_ratio_hist_pairs"] >= 50
     df["city_march_feb_ratio"] = np.where(
@@ -519,7 +510,6 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
         "rto_per_day_yoy_ratio",
         "global_march_feb_ratio",
         "region_march_feb_ratio",
-        "area_march_feb_ratio",
         "city_march_feb_ratio",
     }
 
