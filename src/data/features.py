@@ -316,6 +316,11 @@ def add_dynamic_lags(df: pd.DataFrame, group: str = "store_id") -> pd.DataFrame:
 
 def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     days_in_month = days_in_month_vec(df["year"].values, df["month"].values)
+    non_working_vec = np.array([
+        non_working_days.get((year, month), 0)
+        for year, month in zip(df["year"].values, df["month"].values)
+    ])
+
     return with_columns(
         df,
         {
@@ -326,10 +331,11 @@ def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
             "is_mar": (df["month"] == 3).astype(np.int8),
             "is_dec": (df["month"] == 12).astype(np.int8),
             "quarter": ((df["month"] - 1) // 3 + 1).astype(np.int8),
-            "days_in_month": days_in_month,
-            "days_per_month_ratio": (days_in_month.astype(np.float32) / 30.4375).astype(np.float32),
+            "non_working_days": non_working_vec.astype(np.int8),
+            "days_in_month": days_in_month.astype(np.int8),
         },
     )
+
 
 
 def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
@@ -402,110 +408,15 @@ def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFram
     return df.drop(columns=["_orig_pos"])
 
 
-def _add_prev_year_group_mean(
-    df: pd.DataFrame,
-    target: str,
-    group_cols: list[str],
-    feature_name: str,
-) -> pd.DataFrame:
-    if any(col not in df.columns for col in group_cols):
-        return df
-    agg = (
-        df.groupby(group_cols + ["year", "month"], dropna=False)[target]
-        .mean()
-        .reset_index(name=feature_name)
-    )
-    agg["year"] = agg["year"] + 1
-    return df.merge(agg, on=group_cols + ["year", "month"], how="left")
-
-
-def _compute_historical_march_feb_ratio(
-    df: pd.DataFrame,
-    target: str,
-    group_cols: list[str],
-    prefix: str,
-) -> pd.DataFrame:
-    month_slice = df[df["month"].isin([2, 3])].copy()
-    if month_slice.empty:
-        df[f"{prefix}_march_feb_ratio"] = np.nan
-        df[f"{prefix}_march_feb_ratio_hist_pairs"] = 0
-        return df
-
-    value_agg = (
-        month_slice.groupby(group_cols + ["year", "month"], dropna=False)[target]
-        .mean()
-        .reset_index(name="group_target")
-    )
-    count_agg = (
-        month_slice.groupby(group_cols + ["year", "month"], dropna=False)
-        .size()
-        .reset_index(name="group_count")
-    )
-
-    value_pivot = value_agg.pivot_table(
-        index=group_cols + ["year"],
-        columns="month",
-        values="group_target",
-        observed=False,
-    ).reset_index()
-    count_pivot = count_agg.pivot_table(
-        index=group_cols + ["year"],
-        columns="month",
-        values="group_count",
-        observed=False,
-    ).reset_index()
-    value_pivot = value_pivot.rename(columns={2: "feb_value", 3: "mar_value"})
-    count_pivot = count_pivot.rename(columns={2: "feb_count", 3: "mar_count"})
-
-    ratio_df = value_pivot.merge(count_pivot, on=group_cols + ["year"], how="left")
-    ratio_df = ratio_df.dropna(subset=["feb_value", "mar_value"])
-    ratio_df[f"{prefix}_march_feb_ratio"] = safe_divide(
-        ratio_df["mar_value"],
-        ratio_df["feb_value"],
-    )
-    ratio_df[f"{prefix}_march_feb_ratio_pair_count"] = ratio_df[
-        ["feb_count", "mar_count"]
-    ].min(axis=1).fillna(0)
-    ratio_df = ratio_df.sort_values(group_cols + ["year"] if group_cols else ["year"]).reset_index(drop=True)
-
-    ratio_col = f"{prefix}_march_feb_ratio"
-    pairs_col = f"{prefix}_march_feb_ratio_hist_pairs"
-    pair_count_col = f"{prefix}_march_feb_ratio_pair_count"
-
-    if group_cols:
-        ratio_df[ratio_col] = expanding_mean_shifted(
-            ratio_df[ratio_col],
-            ratio_df[group_cols].astype(str).agg("||".join, axis=1),
-        )
-        ratio_df[pairs_col] = (
-            ratio_df[pair_count_col]
-            .groupby(ratio_df[group_cols].astype(str).agg("||".join, axis=1))
-            .expanding()
-            .sum()
-            .shift(1)
-            .reset_index(level=0, drop=True)
-        ).fillna(0)
-    else:
-        ratio_df[ratio_col] = ratio_df[ratio_col].expanding().mean().shift(1)
-        ratio_df[pairs_col] = ratio_df[pair_count_col].expanding().sum().shift(1).fillna(0)
-
-    merge_cols = group_cols + ["year"]
-    keep_cols = merge_cols + [ratio_col, pairs_col]
-    df = df.merge(ratio_df[keep_cols], on=merge_cols, how="left")
-    df[ratio_col] = np.where(df["month"] == 3, df[ratio_col], np.nan)
-    df[pairs_col] = np.where(df["month"] == 3, df[pairs_col], 0)
-    return df
-
-
 def add_group_seasonality_features(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
-    df = _add_prev_year_group_mean(df, target, ["region"], "region_month_rto_mean_lag12")
-    df = _compute_historical_march_feb_ratio(df, target, [], "global")
+    df = add_prev_year_group_mean(df, target, ["region"], "region_month_rto_mean_lag12")
+    df = compute_historical_march_feb_ratio(df, target, [], "global")
     for prefix, group_cols in (
         ("region", ["region"]),
         ("area", ["area_cat"]),
         ("locality", ["locality"]),
     ):
-        df = _compute_historical_march_feb_ratio(df, target, group_cols, prefix)
+        df = compute_historical_march_feb_ratio(df, target, group_cols, prefix)
 
     df["region_march_feb_ratio"] = df["region_march_feb_ratio"].fillna(df["global_march_feb_ratio"])
     df["area_march_feb_ratio"] = df["area_march_feb_ratio"].fillna(df["global_march_feb_ratio"])
