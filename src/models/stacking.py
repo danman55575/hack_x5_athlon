@@ -2,6 +2,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
+from sklearn.preprocessing import StandardScaler
 from .base import BaseModel
 
 
@@ -11,15 +12,18 @@ class Blender(BaseModel):
 
     def __init__(self, params=None):
         super().__init__(params)
+        self.scaler = StandardScaler()
         alpha = (self.params or {}).get("alpha", 1.0)
         self.model_ = Ridge(alpha=alpha, positive=(self.params or {}).get("positive", True))
 
     def fit(self, X, y, X_val=None, y_val=None, cat_features=None):
-        self.model_.fit(X.values, y)
+        X_scaled = self.scaler.fit_transform(X.values)
+        self.model_.fit(X_scaled, y)
         return self
 
     def predict(self, X):
-        return self.model_.predict(X.values)
+        X_scaled = self.scaler.fit(X.values)
+        return self.model_.predict(X_scaled)
 
 
 def weighted_blend(predictions: dict[str, np.ndarray], weights: dict[str, float]) -> np.ndarray:

@@ -113,7 +113,7 @@ def add_external_macro_features(
 def add_lag_features(
     df: pd.DataFrame,
     target: str = "rto",
-    lags: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25),
+    lags: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18),
     group: str = "store_id",
 ) -> pd.DataFrame:
     g = df.groupby(group)[target]
