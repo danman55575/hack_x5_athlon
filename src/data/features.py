@@ -110,6 +110,50 @@ def add_external_macro_features(
     return df.merge(region_panel[macro_cols], on=["year", "month", "region"], how="left")
 
 
+def add_cci_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Adds Consumer Confidence Index (CCI) features with lags and rolling stats.
+    
+    CCI is a global macro feature that doesn't vary by region/store.
+    Lags and rolling statistics are computed to capture temporal patterns.
+    """
+    df = df.copy()
+    
+    # Map CCI values from the CCI dictionary using (year, month)
+    cci_values = np.array([
+        CCI.get((year, month), np.nan)
+        for year, month in zip(df["year"].values, df["month"].values)
+    ], dtype=np.float64)
+    
+    df["cci"] = cci_values
+    
+    # Create lags of CCI (using month as the time unit)
+    # CCI doesn't vary by store, so we can group by t (time period) instead
+    cci_panel = df[["year", "quarter", "t", "cci"]].drop_duplicates().sort_values("t").reset_index(drop=True)
+    cci_series = cci_panel["cci"]
+    
+    cci_panel["cci_lag_1"] = cci_series.shift(1)
+    cci_panel["cci_lag_2"] = cci_series.shift(2)
+    cci_panel["cci_lag_4"] = cci_series.shift(4)
+
+
+    # CCI momentum (difference between current and lagged)
+    cci_panel["cci_diff_1"] = cci_panel["cci"] - cci_panel["cci_lag_1"]
+    cci_panel["cci_diff_4"] = cci_panel["cci"] - cci_panel["cci_lag_4"]
+    
+    cci_cols = [
+        "year", "quarter", "t",
+        "cci", "cci_lag_1", "cci_lag_2",
+        "cci_diff_1"
+    ]
+    
+    # Merge back to main dataframe
+    cci_merge = cci_panel[cci_cols]
+    df = df.drop(columns=["cci", "cci_lag_4"], errors="ignore")
+    df = df.merge(cci_merge, on=["year", "quarter", "t"], how="left")
+    
+    return df
+
+
 def add_lag_features(
     df: pd.DataFrame,
     target: str = "rto",
@@ -142,21 +186,18 @@ def add_rolling_features(
         new_cols[max_col] = roll.max().reset_index(level=0, drop=True)
         new_cols[median_col] = roll.median().reset_index(level=0, drop=True)
 
-    for window in (2, 3, 4, 6, 12):
+    for window in (3, 6):
         rmean_col = f"{target}_rmean_{window}"
         if rmean_col in new_cols:
             new_cols[f"{target}_mean_{window}"] = new_cols[rmean_col]
     for window in (3, 6):
-        rmedian_col = f"{target}_rmedian_{window}"
         rstd_col = f"{target}_rstd_{window}"
-        if rmedian_col in new_cols:
-            new_cols[f"{target}_median_{window}"] = new_cols[rmedian_col]
         if rstd_col in new_cols:
             new_cols[f"{target}_std_{window}"] = new_cols[rstd_col]
-    if f"{target}_rmin_6" in new_cols:
-        new_cols[f"{target}_min_6"] = new_cols[f"{target}_rmin_6"]
-    if f"{target}_rmax_6" in new_cols:
-        new_cols[f"{target}_max_6"] = new_cols[f"{target}_rmax_6"]
+
+    if f"{target}_mean_3" in new_cols and f"{target}_std_3" in new_cols:
+        new_cols[f"{target}_cv_3"] = safe_divide(new_cols[f"{target}_std_3"], new_cols[f"{target}_mean_3"])
+
     if f"{target}_mean_6" in new_cols and f"{target}_std_6" in new_cols:
         new_cols[f"{target}_cv_6"] = safe_divide(new_cols[f"{target}_std_6"], new_cols[f"{target}_mean_6"])
     return with_columns(df, new_cols)
@@ -175,6 +216,7 @@ def add_diff_features(df: pd.DataFrame, target: str = "rto", group: str = "store
         {
             f"{target}_diff_1": lag1 - lag2,
             f"{target}_diff_2": lag2 - lag3,
+            f"{target}_diff2_1": lag1 - 2*lag2 + lag3,
             f"{target}_pct_1": safe_divide(lag1 - lag2, lag2),
             f"{target}_pct_2": safe_divide(lag2 - lag3, lag3),
             f"{target}_diff_6": lag1 - lag6,
@@ -419,6 +461,7 @@ def add_group_seasonality_features(df: pd.DataFrame, target: str = "rto") -> pd.
         df["region_march_feb_ratio"],
     )
     df["city_march_feb_ratio"] = pd.Series(df["city_march_feb_ratio"]).fillna(df["global_march_feb_ratio"])
+    df.drop(columns=["global_march_feb_ratio", "global_march_feb_ratio_hist_pairs"], inplace=True)
     return df
 
 
@@ -436,11 +479,15 @@ def encode_categoricals_ordinal(
     return df, mappings
 
 
-def downcast(df: pd.DataFrame) -> pd.DataFrame:
-    for col in df.select_dtypes(include="float64").columns:
-        df[col] = df[col].astype(np.float32)
-    for col in df.select_dtypes(include="int64").columns:
-        df[col] = df[col].astype(np.int32 if col == "store_id" else pd.to_numeric(df[col], downcast="integer").dtype)
+def downcast(df):
+    # Assume df is already copied if needed
+    for c in df.select_dtypes(include="float64").columns:
+        df[c] = df[c].astype(np.float32)
+    for c in df.select_dtypes(include="int64").columns:
+        if c == "store_id":
+            df[c] = df[c].astype(np.int32)
+        else:
+            df[c] = pd.to_numeric(df[c], downcast="integer")
     return df
 
 
@@ -463,22 +510,13 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
 
     basic_lag_re = re.compile(r"^rto_lag_(1|2|3|4|6|12|13|14)$")
     rolling_names = {
-        "rto_mean_2",
-        "rto_mean_3",
-        "rto_mean_4",
-        "rto_mean_6",
-        "rto_mean_12",
-        "rto_median_3",
-        "rto_median_6",
-        "rto_std_3",
-        "rto_std_6",
-        "rto_min_6",
-        "rto_max_6",
-        "rto_cv_6",
+        "rto_cv_3",
+        "rto_cv_6"
     }
     growth_names = {
         "rto_diff_1",
         "rto_diff_2",
+        "rto_diff2_1",
         "rto_diff_6",
         "rto_pct_1",
         "rto_pct_2",
@@ -500,7 +538,6 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
         "rto_same_month_2y",
         "rto_same_month_mean",
         "rto_naive_seasonal",
-        "rto_same_month_1y_per_day",
         "rto_ratio_lag1_sm1y",
         "rto_lag_12_div_lag_13",
         "rto_lag_1_div_lag_12",
@@ -558,29 +595,6 @@ def select_feature_columns(feature_cols: list[str], feature_groups: list[str] | 
     return [col for col in feature_cols if col in selected]
 
 
-def audit_feature_frame(df: pd.DataFrame, feature_cols: list[str]) -> dict[str, object]:
-    feature_df = df[feature_cols]
-    nan_counts = feature_df.isna().sum()
-    all_nan_cols = nan_counts[nan_counts == len(feature_df)].index.tolist()
-
-    numeric_df = feature_df.select_dtypes(include=[np.number])
-    inf_counts = pd.Series(0, index=feature_df.columns, dtype=np.int64)
-    if not numeric_df.empty:
-        inf_values = np.isinf(numeric_df.to_numpy(dtype=np.float64, copy=True))
-        inf_counts.loc[numeric_df.columns] = inf_values.sum(axis=0)
-    inf_cols = inf_counts[inf_counts > 0].sort_values(ascending=False)
-
-    return {
-        "feature_count": len(feature_cols),
-        "rows": int(len(df)),
-        "nan_feature_count": int((nan_counts > 0).sum()),
-        "total_nan": int(nan_counts.sum()),
-        "all_nan_columns": all_nan_cols,
-        "inf_columns": inf_cols.index.tolist(),
-        "top_nan_columns": nan_counts.sort_values(ascending=False).head(20).to_dict(),
-        "top_inf_columns": inf_cols.head(20).to_dict(),
-    }
-
 
 def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame, list[str], list[str]]:
     df = df.sort_values(["store_id", "t"]).copy().reset_index(drop=True)
@@ -596,6 +610,7 @@ def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame,
     df = add_dynamic_lags(df)
     df = add_calendar_features(df)
     df = add_days_features(df, target=target)
+    df = add_cci_features(df)
     df = add_group_aggregations(df, target=target)
     df = add_group_seasonality_features(df, target=target)
     df = df.copy()

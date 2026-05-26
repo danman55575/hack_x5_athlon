@@ -74,6 +74,7 @@ ANOMALY_FEATURES = [
 ]
 
 EXTERNAL_MACRO_PREFIXES = (
+    "cci_",
     "region_spendings_",
     "country_spendings_",
     "region_to_country_spendings_",
@@ -117,6 +118,19 @@ non_working_days = {
     (2025, 1): 14,  # 1-8, 29-31 декабря 2024 (9 дней) + субботы/воскресенья (5 дней) ⚠️
     (2025, 2): 9,   # 22-23 февраля (2 дня) + субботы/воскресенья (7 дней)
     (2025, 3): 9,   # 8-9 марта (2 дня) + субботы/воскресенья (7 дней)
+}
+
+
+CCI = {
+    (2023, 1): -19,
+    (2023, 2): -15,
+    (2023, 3): -13,
+    (2023, 4): -13,
+    (2024, 1): -7,
+    (2024, 2): -6,
+    (2024, 3): -7,
+    (2024, 4): -9,
+    (2025, 1): -11
 }
 
 
@@ -264,3 +278,27 @@ def compute_historical_march_feb_ratio(
     df[ratio_col] = np.where(df["month"] == 3, df[ratio_col], np.nan)
     df[pairs_col] = np.where(df["month"] == 3, df[pairs_col], 0)
     return df
+
+
+def audit_feature_frame(df: pd.DataFrame, feature_cols: list[str]) -> dict[str, object]:
+    feature_df = df[feature_cols]
+    nan_counts = feature_df.isna().sum()
+    all_nan_cols = nan_counts[nan_counts == len(feature_df)].index.tolist()
+
+    numeric_df = feature_df.select_dtypes(include=[np.number])
+    inf_counts = pd.Series(0, index=feature_df.columns, dtype=np.int64)
+    if not numeric_df.empty:
+        inf_values = np.isinf(numeric_df.to_numpy(dtype=np.float64, copy=True))
+        inf_counts.loc[numeric_df.columns] = inf_values.sum(axis=0)
+    inf_cols = inf_counts[inf_counts > 0].sort_values(ascending=False)
+
+    return {
+        "feature_count": len(feature_cols),
+        "rows": int(len(df)),
+        "nan_feature_count": int((nan_counts > 0).sum()),
+        "total_nan": int(nan_counts.sum()),
+        "all_nan_columns": all_nan_cols,
+        "inf_columns": inf_cols.index.tolist(),
+        "top_nan_columns": nan_counts.sort_values(ascending=False).head(20).to_dict(),
+        "top_inf_columns": inf_cols.head(20).to_dict(),
+    }
