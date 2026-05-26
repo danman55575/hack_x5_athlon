@@ -372,6 +372,43 @@ def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store
     return with_columns(df, new_cols)
 
 
+def add_store_state_features(df: pd.DataFrame, group: str = "store_id") -> pd.DataFrame:
+    """Добавляет признаки доступной глубины истории и недавних скачков без утечки."""
+    months_with_history = df.groupby(group).cumcount() + 1
+    log_growth = pd.Series(df.get("log_growth_lag_1"), index=df.index, copy=False)
+
+    return with_columns(
+        df,
+        {
+            "months_with_history": months_with_history.astype(np.int16),
+            "is_new_store": (months_with_history <= 3).astype(np.int8),
+            "is_short_history_store": (months_with_history <= 12).astype(np.int8),
+            "is_recent_jump_up": (log_growth > np.log(1.12)).astype(np.int8),
+            "is_recent_jump_down": (log_growth < np.log(0.88)).astype(np.int8),
+        },
+    )
+
+
+def _add_group_month_aggregate(
+    df: pd.DataFrame,
+    value: pd.Series,
+    group_cols: list[str],
+    feature_name: str,
+    stat: str = "mean",
+) -> pd.DataFrame:
+    if any(col not in df.columns for col in group_cols):
+        return df
+
+    temp = df[group_cols + ["t"]].copy()
+    temp["_value"] = value.values
+    agg = (
+        temp.groupby(group_cols + ["t"], dropna=False)["_value"]
+        .agg(stat)
+        .reset_index(name=feature_name)
+    )
+    return df.merge(agg, on=group_cols + ["t"], how="left")
+
+
 def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
     """Кросс-магазинные агрегаты только из уже известных лагов."""
     df = df.copy().reset_index(drop=True)
@@ -596,6 +633,208 @@ def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame,
     df = add_dynamic_lags(df)
     df = add_calendar_features(df)
     df = add_days_features(df, target=target)
+    df = add_group_aggregations(df, target=target)
+    df = add_group_seasonality_features(df, target=target)
+    df = df.copy()
+    df, _ = encode_categoricals_ordinal(df)
+    df = downcast(df)
+
+    drop_cols = {target, "store_id", "year", "t", "month"} | set(DYNAMIC_COLS)
+    feature_cols = [col for col in df.columns if col not in drop_cols]
+    cat_features = [col for col in CAT_COLS if col in feature_cols]
+    return df, feature_cols, cat_features
+
+
+def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
+    """Кросс-магазинные агрегаты по группе и месяцу только из уже известных лагов."""
+    df = df.copy().reset_index(drop=True)
+    lag1 = df.groupby("store_id")[target].shift(1)
+    lag12 = df.groupby("store_id")[target].shift(12)
+    lag13 = df.groupby("store_id")[target].shift(13)
+    yoy = safe_divide(lag1, lag12)
+    yoy_macro = safe_divide(lag1, lag13)
+
+    group_defs = [
+        ("region", ["region"]),
+        ("locality", ["locality"]),
+        ("area_cat", ["area_cat"]),
+        ("open_date_cat", ["open_date_cat"]),
+        ("region_area", ["region", "area_cat"]),
+    ]
+    for prefix, group_cols in group_defs:
+        df = _add_group_month_aggregate(df, lag1, group_cols, f"grp_{prefix}_lag1_mean", stat="mean")
+        df = _add_group_month_aggregate(df, lag1, group_cols, f"grp_{prefix}_lag1_median", stat="median")
+        df = _add_group_month_aggregate(df, yoy, group_cols, f"grp_{prefix}_yoy_mean", stat="mean")
+        df = _add_group_month_aggregate(df, yoy, group_cols, f"grp_{prefix}_yoy_median", stat="median")
+
+    df["grp_all_lag1_mean"] = lag1.groupby(df["t"]).transform("mean")
+    df["grp_all_lag12_mean"] = lag12.groupby(df["t"]).transform("mean")
+    df["grp_all_yoy_macro_mean"] = yoy_macro.groupby(df["t"]).transform("mean")
+    df["grp_all_yoy_macro_median"] = yoy_macro.groupby(df["t"]).transform("median")
+
+    alias_map = {
+        "region_rto_mean_lag_1": "grp_region_lag1_mean",
+        "city_rto_mean_lag_1": "grp_locality_lag1_mean",
+        "area_rto_mean_lag_1": "grp_area_cat_lag1_mean",
+        "region_area_rto_mean_lag_1": "grp_region_area_lag1_mean",
+    }
+    for alias, source in alias_map.items():
+        if source in df.columns:
+            df[alias] = df[source]
+    return df
+
+
+def add_group_seasonality_features(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
+    df = add_prev_year_group_mean(df, target, ["region"], "region_month_rto_mean_lag12")
+    df = add_prev_year_group_mean(df, target, ["region", "area_cat"], "region_area_month_rto_mean_lag12")
+    df = compute_historical_march_feb_ratio(df, target, [], "global")
+    for prefix, group_cols in (
+        ("region", ["region"]),
+        ("locality", ["locality"]),
+        ("area", ["area_cat"]),
+    ):
+        df = compute_historical_march_feb_ratio(df, target, group_cols, prefix)
+
+    df["region_march_feb_ratio"] = pd.Series(df["region_march_feb_ratio"], copy=False).fillna(
+        df["global_march_feb_ratio"]
+    )
+    df["area_march_feb_ratio"] = (
+        pd.Series(df["area_march_feb_ratio"], copy=False)
+        .fillna(df["region_march_feb_ratio"])
+        .fillna(df["global_march_feb_ratio"])
+    )
+
+    use_locality = df["locality_march_feb_ratio_hist_pairs"] >= 50
+    df["city_march_feb_ratio"] = np.where(
+        use_locality,
+        df["locality_march_feb_ratio"],
+        df["region_march_feb_ratio"],
+    )
+    df["city_march_feb_ratio"] = pd.Series(df["city_march_feb_ratio"]).fillna(df["global_march_feb_ratio"])
+    return df
+
+
+def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
+    """Разбивает список фичей на логические группы для абляций."""
+    groups = {
+        "x5_public": [],
+        "external_macro": [],
+        "ets": [],
+        "target_encoding": [],
+        "static_calendar": [],
+        "basic_lags": [],
+        "rolling": [],
+        "growth_ratio": [],
+        "seasonality": [],
+        "group_aggregates": [],
+        "anomaly_residual": [],
+        "dynamic_covariates": [],
+        "other": [],
+    }
+
+    basic_lag_re = re.compile(r"^rto_lag_(1|2|3|4|6|12|13|14)$")
+    rolling_names = {
+        "rto_mean_2",
+        "rto_mean_3",
+        "rto_mean_4",
+        "rto_mean_6",
+        "rto_mean_12",
+        "rto_median_3",
+        "rto_median_6",
+        "rto_std_3",
+        "rto_std_6",
+        "rto_min_6",
+        "rto_max_6",
+        "rto_cv_6",
+    }
+    growth_names = {
+        "rto_diff_1",
+        "rto_diff_2",
+        "rto_diff_6",
+        "rto_pct_1",
+        "rto_pct_2",
+        "rto_pct_6",
+        "rto_yoy_diff",
+        "rto_yoy_ratio",
+        "rto_log_ratio_1_12",
+        "log_growth_lag_1",
+        "log_growth_lag_2",
+        "log_growth_lag_4",
+        "log_growth_lag_6",
+        "rto_lag_1_div_lag_2",
+        "rto_lag_2_div_lag_4",
+        "rto_lag_1_div_mean_3",
+        "rto_mean_3_div_mean_12",
+    }
+    seasonal_names = {
+        "rto_same_month_1y",
+        "rto_same_month_2y",
+        "rto_same_month_mean",
+        "rto_naive_seasonal",
+        "rto_same_month_1y_per_day",
+        "rto_ratio_lag1_sm1y",
+        "rto_lag_12_div_lag_13",
+        "rto_lag_1_div_lag_12",
+        "rto_lag_2_div_lag_14",
+        "rto_seasonal_ratio_baseline",
+        "rto_lag_12_per_day",
+        "rto_per_day_yoy_ratio",
+        "global_march_feb_ratio",
+        "region_march_feb_ratio",
+        "area_march_feb_ratio",
+        "city_march_feb_ratio",
+    }
+
+    for col in feature_cols:
+        if col.startswith("x5pub_"):
+            groups["x5_public"].append(col)
+        elif col.startswith(EXTERNAL_MACRO_PREFIXES):
+            groups["external_macro"].append(col)
+        elif col.startswith("ets_"):
+            groups["ets"].append(col)
+        elif col.startswith("te_"):
+            groups["target_encoding"].append(col)
+        elif col in CAT_COLS or col in STATIC_NUMERIC_COLS or col in CALENDAR_COLS:
+            groups["static_calendar"].append(col)
+        elif basic_lag_re.match(col):
+            groups["basic_lags"].append(col)
+        elif col in rolling_names:
+            groups["rolling"].append(col)
+        elif col in growth_names:
+            groups["growth_ratio"].append(col)
+        elif col in seasonal_names or "march_feb_ratio_hist_pairs" in col:
+            groups["seasonality"].append(col)
+        elif (
+            col.startswith("grp_")
+            or col.endswith("_month_rto_mean_lag12")
+            or col.endswith("_rto_mean_lag_1")
+        ):
+            groups["group_aggregates"].append(col)
+        elif col in ANOMALY_FEATURES:
+            groups["anomaly_residual"].append(col)
+        elif any(col.startswith(prefix) for prefix in DYNAMIC_COLS):
+            groups["dynamic_covariates"].append(col)
+        else:
+            groups["other"].append(col)
+
+    return groups
+
+
+def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame, list[str], list[str]]:
+    df = df.sort_values(["store_id", "t"]).copy().reset_index(drop=True)
+    df = add_external_macro_features(df)
+    df = add_lag_features(df, target=target)
+    df = add_rolling_features(df, target=target)
+    df = add_diff_features(df, target=target)
+    df = add_growth_ratio_features(df, target=target)
+    df = add_seasonal_features(df, target=target)
+    df = add_trend_features(df, target=target)
+    df = add_expanding_stats(df, target=target)
+    df = df.copy()
+    df = add_dynamic_lags(df)
+    df = add_calendar_features(df)
+    df = add_days_features(df, target=target)
+    df = add_store_state_features(df)
     df = add_group_aggregations(df, target=target)
     df = add_group_seasonality_features(df, target=target)
     df = df.copy()

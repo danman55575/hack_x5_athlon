@@ -1,0 +1,58 @@
+Отчёт по EDA и быстрым экспериментам
+
+Что уже было в репозитории
+- time-aware CV по фиксированным месяцам, включая март 2024 и февраль 2025;
+- time-aware target encoding;
+- реализации LightGBM, XGBoost, CatBoost;
+- генерация OOF, importance и submission;
+- отдельный сценарий для feature study.
+
+Что было доработано
+- исправлены групповые агрегаты: теперь они считаются на уровне группа × месяц из уже известных лагов;
+- добавлены area/region_area сезонные и групповые признаки;
+- добавлены признаки глубины истории и недавних скачков;
+- быстрые эксперименты ограничены top-100 фичами reference-модели.
+
+EDA
+- EDA не запускался в этом режиме.
+
+Проверки leakage и качества фичей
+- rolling_shift_check_passed: True
+- дублей после подготовки фичей: 0
+- полностью пустых колонок после сборки: 0
+
+Reference top-100
+- lgbm_reference_top100: mean_mape=5.7214, march_fold=4.4606
+- top_features: rto_lag_1, rto_mean_2, days_in_month_lag_1, locality, rto_seasonal_ratio_baseline, region, grp_all_lag1_mean, month_cos, rto_median_3, month_sin
+
+Быстрые эксперименты
+- lgbm_best_ratio_mom_ratio: mean_mape=4.7179, march_fold=3.951417565303285, feature_count=42, dropped_by_top100=14
+- lgbm_fs3_rolling: mean_mape=5.1701, march_fold=5.252516811416367, feature_count=42, dropped_by_top100=14
+- lgbm_fs9_external_macro: mean_mape=5.1840, march_fold=5.2846655073546005, feature_count=47, dropped_by_top100=19
+- lgbm_fs4_growth: mean_mape=5.1963, march_fold=5.055915176677713, feature_count=58, dropped_by_top100=15
+- lgbm_fs2_basic_lags: mean_mape=5.2684, march_fold=5.619611353844022, feature_count=30, dropped_by_top100=14
+- lgbm_fs10_x5_public: mean_mape=5.2684, march_fold=5.619611353844022, feature_count=30, dropped_by_top100=29
+- lgbm_reference_top100: mean_mape=5.7214, march_fold=4.460560967477077, feature_count=169, dropped_by_top100=0
+- lgbm_fs6_group: mean_mape=5.7233, march_fold=4.57760277663735, feature_count=84, dropped_by_top100=38
+- lgbm_fs5_seasonality: mean_mape=5.7431, march_fold=5.137839443730541, feature_count=65, dropped_by_top100=27
+- lgbm_fs7_anomaly: mean_mape=5.8261, march_fold=4.527577542979425, feature_count=86, dropped_by_top100=42
+- lgbm_fs8_dynamic_ets: mean_mape=5.8455, march_fold=4.424856791528776, feature_count=95, dropped_by_top100=49
+- baseline_seasonal_ratio: mean_mape=6.4278, march_fold=5.927749926502539, feature_count=0, dropped_by_top100=0
+- baseline_blend: mean_mape=6.4750, march_fold=6.882087294709377, feature_count=0, dropped_by_top100=0
+- lgbm_best_ratio_yoy_ratio: mean_mape=6.6883, march_fold=8.924557722677568, feature_count=42, dropped_by_top100=14
+- baseline_last_month: mean_mape=9.5407, march_fold=10.404175901597396, feature_count=0, dropped_by_top100=0
+- baseline_same_month_last_year: mean_mape=10.5687, march_fold=11.577361191314358, feature_count=0, dropped_by_top100=0
+- lgbm_fs1_static_te: mean_mape=16.4764, march_fold=15.931894496044247, feature_count=23, dropped_by_top100=13
+
+Выбранный набор
+- lgbm_fs3_rolling: mean_mape=5.1701, march_fold=5.252516811416367, features=42
+- top_features: rto_lag_1, rto_mean_2, locality, days_in_month_lag_1, month_cos, is_jan, month_sin, region, households, rto_lag_12
+
+Артефакты
+- artifacts/eda/quick_experiments_mean_mape.png
+- artifacts/eda/quick_experiments_fold_mape.png
+- artifacts/eda/best_experiment_segment_mapes.png
+- artifacts/eda/reference_top20_importance.png
+- artifacts/eda/best_experiment_fact_vs_pred.png
+- artifacts/eda/best_experiment_error_distribution.png
+- artifacts/eda/best_experiment_feature_importance.png

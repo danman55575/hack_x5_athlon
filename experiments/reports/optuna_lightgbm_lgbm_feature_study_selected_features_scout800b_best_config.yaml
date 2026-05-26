@@ -1,0 +1,52 @@
+name: lgbm_l1_log_feature_study_selected_features
+model: lightgbm
+seed: 2026
+target_transform: log1p
+use_cat: true
+save_oof: true
+cv_val_months:
+- - 2025
+  - 2
+- - 2024
+  - 12
+- - 2024
+  - 9
+- - 2024
+  - 3
+cv_fold_weights:
+- 3.0
+- 2.5
+- 1.0
+- 1.0
+fold_iter_use_weights_gt: 2.5
+final_iter_multiplier: 1.1
+seed_bag:
+- 2026
+winsorize_quantile: 0.999
+sanity_cap_up: 2.0
+sanity_cap_down: 0.5
+apply_sanity_cap_in_cv: true
+params:
+  learning_rate: 0.044525281185079396
+  num_leaves: 145
+  min_data_in_leaf: 147
+  feature_fraction: 0.9383699019515109
+  bagging_fraction: 0.9874898654932726
+  lambda_l1: 0.01267626753405789
+  lambda_l2: 0.0034612023532102406
+  max_depth: -1
+  objective: regression_l1
+  metric: mae
+  bagging_freq: 1
+  num_boost_round: 12000
+  early_stopping_rounds: 300
+  num_threads: 4
+  verbose: -1
+feature_allowlist_path: experiments/reports/feature_study_selected_features.csv
+optuna_meta:
+  study_name: lightgbm_lgbm_feature_study_selected_features_scout800b
+  best_value: 4.903170725943315
+  best_trial: 0
+  feature_list_path: experiments/reports/feature_study_selected_features.csv
+  config_path: configs/lgbm.yaml
+  timestamp: '2026-05-25T23:19:00'

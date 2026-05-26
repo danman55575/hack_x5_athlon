@@ -1,0 +1,53 @@
+name: cat_l1_log_feature_study_selected_features
+model: catboost
+seed: 2026
+target_transform: log1p
+use_cat: true
+save_oof: true
+mape_weights: false
+cv_val_months:
+- - 2025
+  - 2
+- - 2024
+  - 12
+- - 2024
+  - 9
+- - 2024
+  - 3
+cv_fold_weights:
+- 3.0
+- 1.5
+- 1.0
+- 2.0
+fold_iter_use_weights_gt: 0.5
+final_iter_multiplier: 1.1
+seed_bag:
+- 2026
+- 41
+- 777
+winsorize_quantile: 0.999
+sanity_cap_up: 2.0
+sanity_cap_down: 0.5
+apply_sanity_cap_in_cv: true
+params:
+  loss_function: MAE
+  eval_metric: MAE
+  learning_rate: 0.020866463867423125
+  depth: 5
+  l2_leaf_reg: 3.0871573289738503
+  random_strength: 3.3930362739882707
+  iterations: 10000
+  od_type: Iter
+  od_wait: 300
+  thread_count: 4
+  verbose: false
+  bagging_temperature: 0.0
+  border_count: 254
+feature_allowlist_path: experiments/reports/feature_study_selected_features.csv
+optuna_meta:
+  study_name: catboost_catboost_feature_study_selected_features_scout800c1
+  best_value: 6.043257340878115
+  best_trial: 0
+  feature_list_path: experiments/reports/feature_study_selected_features.csv
+  config_path: configs/catboost.yaml
+  timestamp: '2026-05-25T23:57:27'
