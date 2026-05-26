@@ -39,8 +39,97 @@ def get_model(name, params=None):
     return ALL_MODELS[name](params or {})
 
 
-def _prepare(train_path, target_transform, winsorize_quantile,
-             feature_groups=None, model_name: str | None = None):
+def _resolve_feature_allowlist(
+    feature_allowlist: list[str] | None = None,
+    feature_allowlist_path: str | None = None,
+) -> list[str] | None:
+    if feature_allowlist:
+        return list(dict.fromkeys(feature_allowlist))
+    if not feature_allowlist_path:
+        return None
+
+    path = Path(feature_allowlist_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Файл со списком фичей не найден: {path}")
+
+    if path.suffix.lower() == ".csv":
+        loaded = pd.read_csv(path)
+        if "feature" in loaded.columns:
+            values = loaded["feature"].astype(str).tolist()
+        elif "feature_name" in loaded.columns:
+            values = loaded["feature_name"].astype(str).tolist()
+        else:
+            values = loaded.iloc[:, 0].astype(str).tolist()
+    else:
+        values = [line.strip() for line in path.read_text(encoding="utf-8").splitlines()]
+
+    values = [value for value in values if value]
+    return list(dict.fromkeys(values))
+
+
+def _merge_x5_public_features(
+    df_feat: pd.DataFrame,
+    features_path: str = "data/raw/x5_model_features_filtered_csv/x5_model_features_safe_for_mar2025_wide.csv",
+) -> tuple[pd.DataFrame, list[str]]:
+    path = Path(features_path)
+    if not path.exists():
+        return df_feat, []
+
+    ext = pd.read_csv(path)
+    ext = ext[ext["period_type"] == "quarter"].copy()
+    if ext.empty:
+        return df_feat, []
+
+    ext["period_end"] = pd.to_datetime(ext["period_end"])
+    feature_cols = [
+        col
+        for col in ext.columns
+        if col not in {"period_label", "period_type", "year", "quarter", "period_start", "period_end", "period_order"}
+    ]
+    renamed = {col: f"x5pub_{col}" for col in feature_cols}
+    ext = ext.rename(columns=renamed)
+    ext = ext[["period_end"] + list(renamed.values())].copy()
+
+    month_frame = (
+        df_feat[["year", "month", "t"]]
+        .drop_duplicates()
+        .sort_values(["year", "month"])
+        .reset_index(drop=True)
+    )
+    month_frame["month_start"] = pd.to_datetime(
+        month_frame["year"].astype(str) + "-" + month_frame["month"].astype(str).str.zfill(2) + "-01"
+    )
+
+    ext = ext.sort_values("period_end").reset_index(drop=True)
+    month_frame = pd.merge_asof(
+        month_frame.sort_values("month_start"),
+        ext.sort_values("period_end"),
+        left_on="month_start",
+        right_on="period_end",
+        direction="backward",
+        allow_exact_matches=False,
+    )
+
+    value_cols = list(renamed.values())
+    if value_cols:
+        month_frame["x5pub_months_since_quarter_end"] = (
+            (month_frame["year"] - month_frame["period_end"].dt.year) * 12
+            + (month_frame["month"] - month_frame["period_end"].dt.month)
+        ).astype("float32")
+        value_cols.append("x5pub_months_since_quarter_end")
+
+    merged = df_feat.merge(month_frame[["year", "month"] + value_cols], on=["year", "month"], how="left")
+    return merged, value_cols
+
+
+def _prepare(
+    train_path,
+    target_transform,
+    winsorize_quantile,
+    feature_groups=None,
+    model_name: str | None = None,
+    feature_allowlist=None,
+):
     df = load_raw(train_path)
     df = add_target_row_for_march_2025(df)
     df = add_target_encodings(df, target="rto")
@@ -48,6 +137,10 @@ def _prepare(train_path, target_transform, winsorize_quantile,
     cat_encoding = "ordinal" if (model_name in ORDINAL_MODELS) else "native"
     df_feat, feat_cols, cat_features = build_features(df, target="rto", cat_encoding=cat_encoding)
     df_feat = df_feat.reset_index(drop=True)
+    df_feat, x5_public_cols = _merge_x5_public_features(df_feat)
+    for col in x5_public_cols:
+        if col not in feat_cols and col in df_feat.columns:
+            feat_cols.append(col)
 
     ets_path = Path("data/processed/ets_features.parquet")
     if ets_path.exists():
@@ -61,6 +154,13 @@ def _prepare(train_path, target_transform, winsorize_quantile,
     if feature_groups:
         feat_cols = select_feature_columns(feat_cols, feature_groups)
         cat_features = [c for c in cat_features if c in feat_cols]
+
+    if feature_allowlist:
+        allow = set(feature_allowlist)
+        feat_cols = [col for col in feat_cols if col in allow]
+        cat_features = [c for c in cat_features if c in feat_cols]
+        if not feat_cols:
+            raise ValueError("После фильтрации по allowlist не осталось ни одной фичи.")
 
     df_feat = df_feat.copy()
 
@@ -291,6 +391,10 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     target_transform = config.get("target_transform", "log1p")
     winsorize_q = config.get("winsorize_quantile", 1.0)
     feature_groups = config.get("feature_groups")
+    feature_allowlist = _resolve_feature_allowlist(
+        config.get("feature_allowlist"),
+        config.get("feature_allowlist_path"),
+    )
     use_mape_weights = bool(config.get("mape_weights", False))
     skip_final_train = bool(config.get("skip_final_train", False))
     seeds = config.get("seed_bag", [config.get("seed", 2026)])
@@ -311,8 +415,11 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         winsorize_q,
         feature_groups=feature_groups,
         model_name=config["model"],
+        feature_allowlist=feature_allowlist,
     )
     logger.info(f"Features: {len(feat_cols)}; rows: {len(df_feat)}")
+    if feature_allowlist is not None:
+        logger.info("Используется allowlist фичей: %s признаков", len(feature_allowlist))
     logger.info(
         "Аудит фичей (после очистки): total_nan=%s, nan_feature_count=%s, inf_cols=%s",
         feature_audit["total_nan"],
@@ -503,6 +610,7 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         "name": exp_name, "timestamp": ts, "model": config["model"],
         "params": config.get("params", {}),
         "feature_groups": feature_groups,
+        "feature_allowlist_path": config.get("feature_allowlist_path"),
         "feature_count": len(feat_cols),
         "feature_audit": feature_audit,
         "cv_folds": fold_metrics,

@@ -255,22 +255,23 @@ def compute_historical_march_feb_ratio(
     pairs_col = f"{prefix}_march_feb_ratio_hist_pairs"
     pair_count_col = f"{prefix}_march_feb_ratio_pair_count"
 
+    raw_ratio_col = f"{prefix}_march_feb_ratio_raw"
+    ratio_df[raw_ratio_col] = ratio_df[ratio_col]
     if group_cols:
-        ratio_df[ratio_col] = expanding_mean_shifted(
-            ratio_df[ratio_col],
-            ratio_df[group_cols].astype(str).agg("||".join, axis=1),
+        group_key = ratio_df[group_cols].astype(str).agg("||".join, axis=1)
+        ratio_df[ratio_col] = (
+            ratio_df[raw_ratio_col]
+            .groupby(group_key, sort=False)
+            .transform(lambda s: s.expanding().mean().shift(1))
         )
         ratio_df[pairs_col] = (
             ratio_df[pair_count_col]
-            .groupby(ratio_df[group_cols].astype(str).agg("||".join, axis=1))
-            .expanding()
-            .sum()
-            .shift(1)
-            .reset_index(level=0, drop=True)
-        ).fillna(0)
+            .groupby(group_key, sort=False)
+            .transform(lambda s: s.cumsum().shift(1).fillna(0))
+        )
     else:
-        ratio_df[ratio_col] = ratio_df[ratio_col].expanding().mean().shift(1)
-        ratio_df[pairs_col] = ratio_df[pair_count_col].expanding().sum().shift(1).fillna(0)
+        ratio_df[ratio_col] = ratio_df[raw_ratio_col].expanding().mean().shift(1)
+        ratio_df[pairs_col] = ratio_df[pair_count_col].cumsum().shift(1).fillna(0)
 
     merge_cols = group_cols + ["year"]
     keep_cols = merge_cols + [ratio_col, pairs_col]

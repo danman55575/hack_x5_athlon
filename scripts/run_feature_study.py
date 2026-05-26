@@ -1,18 +1,15 @@
 """Автоматизированный EDA и быстрые абляции leakage-safe фичей.
 
-Скрипт использует существующие модули проекта:
-- загрузку и препроцессинг из `src.data`;
-- модельные обёртки и CV-логику из `src.pipeline` / `src.validation`;
-- конфиг LightGBM из `configs/lgbm.yaml`.
-
-Цель скрипта — не строить новый пайплайн с нуля, а воспроизводимо:
-1. собрать EDA-артефакты;
-2. прогнать быстрые абляции групп фичей на одной быстрой модели;
-3. сохранить краткий отчёт и таблицу результатов.
+Скрипт расширяет существующий пайплайн проекта, а не строит новый с нуля.
+Он делает три вещи:
+1. собирает EDA-артефакты;
+2. строит reference-модель и фиксирует top-100 фичей по importance;
+3. гоняет быстрые абляции только на фичах из этого top-100.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -29,14 +26,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.data.features import audit_feature_frame, get_feature_groups, select_feature_columns
-from src.data.loader import add_target_row_for_march_2025, load_raw
-from src.pipeline import (
-    _compute_segment_mapes,
-    _maybe_weights,
-    _prepare,
-    _sanity_cap,
-    _train_seed_bag,
-)
+from src.data.loader import load_raw
+from src.pipeline import _compute_segment_mapes, _maybe_weights, _prepare, _sanity_cap, _train_seed_bag
 from src.utils.io import load_yaml
 from src.validation.cv import default_folds
 from src.validation.metrics import mape
@@ -44,6 +35,10 @@ from src.validation.metrics import mape
 
 EDA_DIR = Path("artifacts/eda")
 REPORTS_DIR = Path("experiments/reports")
+TOP100_PATH = REPORTS_DIR / "feature_study_top100_features.csv"
+SELECTED_FEATURES_PATH = REPORTS_DIR / "feature_study_selected_features.csv"
+RESULTS_PATH = REPORTS_DIR / "feature_study_results.csv"
+REPORT_PATH = REPORTS_DIR / "feature_study_report.txt"
 
 
 class _NullLogger:
@@ -75,6 +70,9 @@ class StudyResult:
     segment_large: float | None
     top_features: list[str]
     comment: str
+    selected_features: list[str]
+    dropped_by_top100: int = 0
+    feature_importance: pd.Series | None = None
     oof_pred: np.ndarray | None = None
 
 
@@ -101,12 +99,42 @@ def _panel_acf(series: np.ndarray, max_lag: int = 14) -> dict[int, float]:
     return out
 
 
+def _safe_corr(left: pd.Series, right: pd.Series) -> float:
+    mask = np.isfinite(left.values) & np.isfinite(right.values)
+    if mask.sum() < 3:
+        return float("nan")
+    return float(np.corrcoef(left.values[mask], right.values[mask])[0, 1])
+
+
 def _save_plot(fig: plt.Figure, filename: str) -> Path:
     path = EDA_DIR / filename
     fig.tight_layout()
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     return path
+
+
+def _run_feature_checks(df_feat: pd.DataFrame) -> dict[str, object]:
+    shifted = df_feat.groupby("store_id")["rto"].shift(1)
+    expected_mean_3 = (
+        shifted.groupby(df_feat["store_id"])
+        .rolling(window=3, min_periods=1)
+        .mean()
+        .reset_index(level=0, drop=True)
+    )
+    rolling_ok = np.allclose(
+        df_feat["rto_mean_3"].fillna(-1.0).values,
+        expected_mean_3.fillna(-1.0).values,
+    )
+
+    return {
+        "dup_store_month": int(df_feat.duplicated(["store_id", "t"]).sum()),
+        "rolling_shift_check_passed": bool(rolling_ok),
+        "all_nan_columns": audit_feature_frame(
+            df_feat,
+            [col for col in df_feat.columns if col not in {"rto", "_rto_train"}],
+        )["all_nan_columns"],
+    }
 
 
 def run_eda(raw_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple[dict[str, object], list[Path]]:
@@ -116,9 +144,11 @@ def run_eda(raw_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple[dict[str, obj
     panel_history = raw_df.groupby("store_id")["t"].nunique()
     summary["n_stores"] = int(raw_df["store_id"].nunique())
     summary["n_months"] = int(raw_df["t"].nunique())
+    summary["min_month"] = str(_month_label(raw_df[["year", "month"]]).min())
+    summary["max_month"] = str(_month_label(raw_df[["year", "month"]]).max())
     summary["dup_store_month"] = int(raw_df.duplicated(["store_id", "t"]).sum())
     summary["panel_full_share"] = float((panel_history == raw_df["t"].nunique()).mean())
-    summary["history_stats"] = panel_history.describe().to_dict()
+    summary["history_stats"] = {k: float(v) for k, v in panel_history.describe().to_dict().items()}
     summary["stores_ge_12"] = int((panel_history >= 12).sum())
     summary["stores_ge_13"] = int((panel_history >= 13).sum())
     summary["stores_ge_14"] = int((panel_history >= 14).sum())
@@ -127,12 +157,14 @@ def run_eda(raw_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple[dict[str, obj
     summary["rto_na"] = int(model_df["rto"].isna().sum())
     summary["rto_zero"] = int((model_df["rto"] == 0).sum())
     summary["rto_neg"] = int((model_df["rto"] < 0).sum())
-    summary["rto_quantiles"] = model_df["rto"].quantile(
-        [0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 0.999]
-    ).to_dict()
-    summary["log_rto_quantiles"] = np.log1p(model_df["rto"]).quantile(
-        [0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 0.999]
-    ).to_dict()
+    summary["rto_quantiles"] = {
+        str(k): float(v)
+        for k, v in model_df["rto"].quantile([0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 0.999]).to_dict().items()
+    }
+    summary["log_rto_quantiles"] = {
+        str(k): float(v)
+        for k, v in np.log1p(model_df["rto"]).quantile([0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 0.999]).to_dict().items()
+    }
 
     static_cols = [
         "region",
@@ -142,13 +174,7 @@ def run_eda(raw_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple[dict[str, obj
         "alco_flag",
         "population",
         "households",
-        "foot_traffic",
-        "car_traffic",
-        "marketplaces_100",
-        "medical_300",
-        "schools_300",
-        "stops_300",
-        "grocery_500",
+        "work_hours",
         "p5_500",
     ]
     summary["changing_static_counts"] = {
@@ -200,9 +226,9 @@ def run_eda(raw_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple[dict[str, obj
     axes[1, 0].boxplot(grouped_boxes, tick_labels=labels, showfliers=False)
     axes[1, 0].set_title("Распределение РТО по месяцам")
     axes[1, 0].tick_params(axis="x", rotation=70)
-    abs_pct_error = (model_df["rto"].median() / model_df["rto"]).replace([np.inf, -np.inf], np.nan)
-    axes[1, 1].hist(abs_pct_error.dropna(), bins=60, color="#54a24b", alpha=0.85)
-    axes[1, 1].set_title("Насколько MAPE чувствителен к малым РТО")
+    mape_sensitivity = (model_df["rto"].median() / model_df["rto"]).replace([np.inf, -np.inf], np.nan)
+    axes[1, 1].hist(mape_sensitivity.dropna(), bins=60, color="#54a24b", alpha=0.85)
+    axes[1, 1].set_title("Чувствительность MAPE к малым РТО")
     axes[1, 1].set_xlabel("median_rto / rto")
     artifacts.append(_save_plot(fig, "rto_distributions.png"))
 
@@ -213,9 +239,7 @@ def run_eda(raw_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple[dict[str, obj
     demeaned = np.log1p(model_df["rto"]) - np.log1p(model_df.groupby("store_id")["rto"].transform("mean"))
     demeaned_acf = {}
     for lag in range(1, 15):
-        lagged = demeaned.groupby(model_df["store_id"]).shift(lag)
-        mask = np.isfinite(demeaned.values) & np.isfinite(lagged.values)
-        demeaned_acf[lag] = float(np.corrcoef(demeaned.values[mask], lagged.values[mask])[0, 1])
+        demeaned_acf[lag] = _safe_corr(demeaned, demeaned.groupby(model_df["store_id"]).shift(lag))
     summary["demeaned_log_acf"] = demeaned_acf
 
     lag1 = model_df.groupby("store_id")["rto"].shift(1)
@@ -223,9 +247,7 @@ def run_eda(raw_df: pd.DataFrame, model_df: pd.DataFrame) -> tuple[dict[str, obj
     growth = np.log(lag1 / lag2)
     growth_acf = {}
     for lag in (1, 2, 4, 6):
-        lagged = growth.groupby(model_df["store_id"]).shift(lag)
-        mask = np.isfinite(growth.values) & np.isfinite(lagged.values)
-        growth_acf[lag] = float(np.corrcoef(growth.values[mask], lagged.values[mask])[0, 1])
+        growth_acf[lag] = _safe_corr(growth, growth.groupby(model_df["store_id"]).shift(lag))
     summary["growth_acf"] = growth_acf
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 4))
@@ -300,6 +322,26 @@ def _baseline_predictions(df_feat: pd.DataFrame) -> dict[str, pd.Series]:
     }
 
 
+def _aggregate_segment_metric(segment_mapes: list[dict[str, float]], key: str) -> float | None:
+    values = [row[key] for row in segment_mapes if key in row]
+    if not values:
+        return None
+    return float(np.mean(values))
+
+
+def _select_experiment_features(
+    all_feature_cols: list[str],
+    feature_groups: list[str],
+    allowed_features: set[str] | None = None,
+) -> tuple[list[str], int]:
+    feat_cols = select_feature_columns(all_feature_cols, feature_groups)
+    if allowed_features is None:
+        return feat_cols, 0
+    dropped = len([col for col in feat_cols if col not in allowed_features])
+    feat_cols = [col for col in feat_cols if col in allowed_features]
+    return feat_cols, dropped
+
+
 def run_baselines(df_feat: pd.DataFrame, folds: list) -> list[StudyResult]:
     results: list[StudyResult] = []
     baselines = _baseline_predictions(df_feat)
@@ -321,11 +363,6 @@ def run_baselines(df_feat: pd.DataFrame, folds: list) -> list[StudyResult]:
                     valid["pred"].values,
                 )
             )
-        mean_mape = float(np.mean(list(fold_mapes.values())))
-        march_fold = next((value for fold_name, value in fold_mapes.items() if fold_name.endswith("-03")), None)
-        seg_small = float(np.mean([row.get("small", np.nan) for row in segment_rows]))
-        seg_medium = float(np.mean([row.get("medium", np.nan) for row in segment_rows]))
-        seg_large = float(np.mean([row.get("large", np.nan) for row in segment_rows]))
         results.append(
             StudyResult(
                 name=name,
@@ -337,24 +374,18 @@ def run_baselines(df_feat: pd.DataFrame, folds: list) -> list[StudyResult]:
                 all_nan_count=0,
                 folds=list(fold_mapes.keys()),
                 fold_mapes=fold_mapes,
-                mean_mape=mean_mape,
-                march_fold_mape=march_fold,
-                segment_small=seg_small,
-                segment_medium=seg_medium,
-                segment_large=seg_large,
+                mean_mape=float(np.mean(list(fold_mapes.values()))),
+                march_fold_mape=next((v for k, v in fold_mapes.items() if k.endswith("-03")), None),
+                segment_small=_aggregate_segment_metric(segment_rows, "small"),
+                segment_medium=_aggregate_segment_metric(segment_rows, "medium"),
+                segment_large=_aggregate_segment_metric(segment_rows, "large"),
                 top_features=[],
                 comment="Ручной baseline без обучения",
+                selected_features=[],
                 oof_pred=oof,
             )
         )
     return results
-
-
-def _aggregate_segment_metric(segment_mapes: list[dict[str, float]], key: str) -> float | None:
-    values = [row[key] for row in segment_mapes if key in row]
-    if not values:
-        return None
-    return float(np.mean(values))
 
 
 def run_log_experiment(
@@ -366,8 +397,12 @@ def run_log_experiment(
     feature_groups: list[str],
     folds: list,
     comment: str,
+    allowed_features: set[str] | None = None,
 ) -> StudyResult:
-    feat_cols = select_feature_columns(all_feature_cols, feature_groups)
+    feat_cols, dropped = _select_experiment_features(all_feature_cols, feature_groups, allowed_features)
+    if not feat_cols:
+        raise ValueError(f"После top-100 фильтра для эксперимента {config['name']} не осталось фичей.")
+
     feat_audit = audit_feature_frame(df_feat, feat_cols)
     cat_in = [c for c in cat_features if c in feat_cols] if config.get("use_cat", True) else None
     seeds = list(config.get("seed_bag", [config.get("seed", 2026)]))
@@ -427,12 +462,12 @@ def run_log_experiment(
             if fold_fi is not None:
                 fi_parts.append(fold_fi.rename(fold.name))
 
+    mean_fi = None
     top_features: list[str] = []
     if fi_parts:
         mean_fi = pd.concat(fi_parts, axis=1).fillna(0.0).mean(axis=1).sort_values(ascending=False)
         top_features = mean_fi.head(15).index.tolist()
 
-    march_fold = next((value for fold_name, value in fold_mapes.items() if fold_name.endswith("-03")), None)
     return StudyResult(
         name=config["name"],
         model=config["model"],
@@ -444,12 +479,15 @@ def run_log_experiment(
         folds=list(fold_mapes.keys()),
         fold_mapes=fold_mapes,
         mean_mape=float(np.mean(list(fold_mapes.values()))),
-        march_fold_mape=march_fold,
+        march_fold_mape=next((v for k, v in fold_mapes.items() if k.endswith("-03")), None),
         segment_small=_aggregate_segment_metric(segment_rows, "small"),
         segment_medium=_aggregate_segment_metric(segment_rows, "medium"),
         segment_large=_aggregate_segment_metric(segment_rows, "large"),
         top_features=top_features,
         comment=comment,
+        selected_features=feat_cols,
+        dropped_by_top100=dropped,
+        feature_importance=mean_fi,
         oof_pred=oof,
     )
 
@@ -462,8 +500,12 @@ def run_ratio_experiment(
     feature_groups: list[str],
     folds: list,
     mode: str,
+    allowed_features: set[str] | None = None,
 ) -> StudyResult:
-    feat_cols = select_feature_columns(all_feature_cols, feature_groups)
+    feat_cols, dropped = _select_experiment_features(all_feature_cols, feature_groups, allowed_features)
+    if not feat_cols:
+        raise ValueError(f"После top-100 фильтра для ratio-эксперимента {config['name']} не осталось фичей.")
+
     feat_audit = audit_feature_frame(df_feat, feat_cols)
     cat_in = [c for c in cat_features if c in feat_cols] if config.get("use_cat", True) else None
     seeds = list(config.get("seed_bag", [config.get("seed", 2026)]))
@@ -517,7 +559,6 @@ def run_ratio_experiment(
             )
         )
 
-    march_fold = next((value for fold_name, value in fold_mapes.items() if fold_name.endswith("-03")), None)
     return StudyResult(
         name=f"{config['name']}_{mode}",
         model=config["model"],
@@ -529,12 +570,14 @@ def run_ratio_experiment(
         folds=list(fold_mapes.keys()),
         fold_mapes=fold_mapes,
         mean_mape=float(np.mean(list(fold_mapes.values()))),
-        march_fold_mape=march_fold,
+        march_fold_mape=next((v for k, v in fold_mapes.items() if k.endswith("-03")), None),
         segment_small=_aggregate_segment_metric(segment_rows, "small"),
         segment_medium=_aggregate_segment_metric(segment_rows, "medium"),
         segment_large=_aggregate_segment_metric(segment_rows, "large"),
         top_features=[],
         comment="Быстрый ratio-target без финального прогона",
+        selected_features=feat_cols,
+        dropped_by_top100=dropped,
         oof_pred=None,
     )
 
@@ -542,26 +585,27 @@ def run_ratio_experiment(
 def _result_rows(results: list[StudyResult]) -> pd.DataFrame:
     rows = []
     for result in results:
-        rows.append(
-            {
-                "name": result.name,
-                "model": result.model,
-                "target": result.target,
-                "feature_groups": ",".join(result.feature_groups),
-                "feature_count": result.feature_count,
-                "total_nan": result.total_nan,
-                "all_nan_count": result.all_nan_count,
-                "folds": ",".join(result.folds),
-                "fold_mapes": "; ".join(f"{k}:{v:.4f}" for k, v in result.fold_mapes.items()),
-                "mean_mape": result.mean_mape,
-                "march_fold_mape": result.march_fold_mape,
-                "segment_small": result.segment_small,
-                "segment_medium": result.segment_medium,
-                "segment_large": result.segment_large,
-                "top_features": ", ".join(result.top_features[:10]),
-                "comment": result.comment,
-            }
-        )
+        row = {
+            "name": result.name,
+            "model": result.model,
+            "target": result.target,
+            "feature_groups": ",".join(result.feature_groups),
+            "feature_count": result.feature_count,
+            "dropped_by_top100": result.dropped_by_top100,
+            "total_nan": result.total_nan,
+            "all_nan_count": result.all_nan_count,
+            "folds": ",".join(result.folds),
+            "mean_mape": result.mean_mape,
+            "march_fold_mape": result.march_fold_mape,
+            "segment_small": result.segment_small,
+            "segment_medium": result.segment_medium,
+            "segment_large": result.segment_large,
+            "top_features": ", ".join(result.top_features[:10]),
+            "comment": result.comment,
+        }
+        for fold_name, fold_mape in result.fold_mapes.items():
+            row[f"mape_{fold_name}"] = fold_mape
+        rows.append(row)
     return pd.DataFrame(rows).sort_values(["mean_mape", "march_fold_mape"], na_position="last")
 
 
@@ -589,10 +633,17 @@ def _save_best_experiment_plots(df_feat: pd.DataFrame, result: StudyResult) -> l
     ax.set_xlabel("Ошибка, %")
     artifacts.append(_save_plot(fig, "best_experiment_error_distribution.png"))
 
+    if result.feature_importance is not None and not result.feature_importance.empty:
+        top_fi = result.feature_importance.head(20).sort_values()
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.barh(top_fi.index, top_fi.values, color="#54a24b")
+        ax.set_title("Top-20 importance у лучшего быстрого эксперимента")
+        artifacts.append(_save_plot(fig, "best_experiment_feature_importance.png"))
+
     return artifacts
 
 
-def _save_experiment_plots(results_df: pd.DataFrame) -> list[Path]:
+def _save_experiment_plots(results_df: pd.DataFrame, reference_result: StudyResult) -> list[Path]:
     artifacts: list[Path] = []
     model_rows = results_df[results_df["model"] != "baseline"].copy()
     if model_rows.empty:
@@ -605,46 +656,66 @@ def _save_experiment_plots(results_df: pd.DataFrame) -> list[Path]:
     ax.tick_params(axis="x", rotation=70)
     artifacts.append(_save_plot(fig, "quick_experiments_mean_mape.png"))
 
+    fold_cols = [col for col in model_rows.columns if col.startswith("mape_")]
+    if fold_cols:
+        heatmap = model_rows.set_index("name")[fold_cols]
+        fig, ax = plt.subplots(figsize=(10, 6))
+        im = ax.imshow(heatmap.values, cmap="YlOrRd")
+        ax.set_xticks(range(len(fold_cols)))
+        ax.set_xticklabels([col.replace("mape_", "") for col in fold_cols], rotation=45, ha="right")
+        ax.set_yticks(range(len(heatmap.index)))
+        ax.set_yticklabels(heatmap.index)
+        ax.set_title("MAPE по фолдам")
+        fig.colorbar(im, ax=ax)
+        artifacts.append(_save_plot(fig, "quick_experiments_fold_mape.png"))
+
     best_row = model_rows.iloc[0]
-    segment_values = [
-        best_row["segment_small"],
-        best_row["segment_medium"],
-        best_row["segment_large"],
-    ]
     fig, ax = plt.subplots(figsize=(6, 4))
-    ax.bar(["small", "medium", "large"], segment_values, color="#f58518")
+    ax.bar(
+        ["small", "medium", "large"],
+        [best_row["segment_small"], best_row["segment_medium"], best_row["segment_large"]],
+        color="#f58518",
+    )
     ax.set_title("MAPE по сегментам у лучшего эксперимента")
     ax.set_ylabel("MAPE")
     artifacts.append(_save_plot(fig, "best_experiment_segment_mapes.png"))
+
+    if reference_result.feature_importance is not None and not reference_result.feature_importance.empty:
+        top_fi = reference_result.feature_importance.head(20).sort_values()
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.barh(top_fi.index, top_fi.values, color="#4c78a8")
+        ax.set_title("Reference top-20 importance")
+        artifacts.append(_save_plot(fig, "reference_top20_importance.png"))
+
     return artifacts
 
 
-def _build_experiments(base_cfg: dict) -> list[tuple[str, list[str], str]]:
+def _build_experiments() -> list[tuple[str, list[str], str]]:
     return [
         (
             "lgbm_fs1_static_te",
             ["static_calendar", "target_encoding"],
-            "Статика, календарь и preexisting target encoding",
+            "Статика, календарь и target encoding.",
         ),
         (
             "lgbm_fs2_basic_lags",
             ["static_calendar", "target_encoding", "basic_lags"],
-            "Добавлены ключевые лаги 1/2/3/4/6/12/13/14",
+            "Добавлены базовые лаги 1/2/3/4/6/12/13/14.",
         ),
         (
             "lgbm_fs3_rolling",
             ["static_calendar", "target_encoding", "basic_lags", "rolling"],
-            "Добавлены rolling mean/median/std/min/max",
+            "Добавлены rolling mean/median/std/min/max.",
         ),
         (
             "lgbm_fs4_growth",
             ["static_calendar", "target_encoding", "basic_lags", "rolling", "growth_ratio"],
-            "Добавлены growth/ratio-фичи",
+            "Добавлены growth/ratio-фичи.",
         ),
         (
             "lgbm_fs5_seasonality",
             ["static_calendar", "target_encoding", "basic_lags", "rolling", "growth_ratio", "seasonality"],
-            "Добавлены сезонные фичи и март/февраль коэффициенты",
+            "Добавлены сезонные отношения и март/февраль коэффициенты.",
         ),
         (
             "lgbm_fs6_group",
@@ -657,7 +728,7 @@ def _build_experiments(base_cfg: dict) -> list[tuple[str, list[str], str]]:
                 "seasonality",
                 "group_aggregates",
             ],
-            "Добавлены групповые leakage-safe агрегаты",
+            "Добавлены групповые leakage-safe агрегаты.",
         ),
         (
             "lgbm_fs7_anomaly",
@@ -671,10 +742,10 @@ def _build_experiments(base_cfg: dict) -> list[tuple[str, list[str], str]]:
                 "group_aggregates",
                 "anomaly_residual",
             ],
-            "Добавлены anomaly/residual-like индикаторы",
+            "Добавлены признаки скачков и глубины истории.",
         ),
         (
-            "lgbm_fs8_plus_dynamic_ets",
+            "lgbm_fs8_dynamic_ets",
             [
                 "static_calendar",
                 "target_encoding",
@@ -687,7 +758,7 @@ def _build_experiments(base_cfg: dict) -> list[tuple[str, list[str], str]]:
                 "dynamic_covariates",
                 "ets",
             ],
-            "Поверх лучшего табличного набора добавлены динамические ковариаты и ETS",
+            "Добавлены динамические ковариаты и ETS.",
         ),
         (
             "lgbm_fs9_external_macro",
@@ -698,25 +769,64 @@ def _build_experiments(base_cfg: dict) -> list[tuple[str, list[str], str]]:
                 "rolling",
                 "external_macro",
             ],
-            "Добавлены внешние макро-фичи: инфляция и лаговые региональные расходы",
+            "Добавлены внешние макро-фичи.",
+        ),
+        (
+            "lgbm_fs10_x5_public",
+            [
+                "static_calendar",
+                "target_encoding",
+                "basic_lags",
+                "x5_public",
+            ],
+            "Добавлены квартальные публичные X5-фичи с as-of привязкой к последнему закрытому кварталу.",
         ),
     ]
+
+
+def _write_feature_list(path: Path, feature_importance: pd.Series, limit: int | None = None) -> None:
+    frame = feature_importance.reset_index()
+    frame.columns = ["feature", "importance"]
+    frame.insert(0, "rank", np.arange(1, len(frame) + 1))
+    if limit is not None:
+        frame = frame.head(limit)
+    frame.to_csv(path, index=False, encoding="utf-8")
+
+
+def _write_selected_features(path: Path, features: list[str]) -> None:
+    pd.DataFrame({"feature": features}).to_csv(path, index=False, encoding="utf-8")
 
 
 def _write_text_report(
     path: Path,
     eda_summary: dict[str, object],
+    feature_checks: dict[str, object],
     results_df: pd.DataFrame,
+    reference_result: StudyResult,
+    best_result: StudyResult,
     artifacts: list[Path],
 ) -> None:
-    lines = []
+    lines: list[str] = []
     lines.append("Отчёт по EDA и быстрым экспериментам")
     lines.append("")
+    lines.append("Что уже было в репозитории")
+    lines.append("- time-aware CV по фиксированным месяцам, включая март 2024 и февраль 2025;")
+    lines.append("- time-aware target encoding;")
+    lines.append("- реализации LightGBM, XGBoost, CatBoost;")
+    lines.append("- генерация OOF, importance и submission;")
+    lines.append("- отдельный сценарий для feature study.")
+    lines.append("")
+    lines.append("Что было доработано")
+    lines.append("- исправлены групповые агрегаты: теперь они считаются на уровне группа × месяц из уже известных лагов;")
+    lines.append("- добавлены area/region_area сезонные и групповые признаки;")
+    lines.append("- добавлены признаки глубины истории и недавних скачков;")
+    lines.append("- быстрые эксперименты ограничены top-100 фичами reference-модели.")
+    lines.append("")
+    lines.append("EDA")
     if eda_summary:
-        lines.append("EDA")
         lines.append(f"- Магазинов: {eda_summary['n_stores']}")
-        lines.append(f"- Месяцев истории: {eda_summary['n_months']}")
-        lines.append(f"- Дублей store_id x month: {eda_summary['dup_store_month']}")
+        lines.append(f"- Месяцев истории: {eda_summary['n_months']} ({eda_summary['min_month']} .. {eda_summary['max_month']})")
+        lines.append(f"- Дублей store_id × month: {eda_summary['dup_store_month']}")
         lines.append(f"- Полная панель: {eda_summary['panel_full_share']:.2%}")
         lines.append(
             f"- Глобальный коэффициент март/февраль: median={eda_summary['global_march_feb_ratio_median']:.4f}, "
@@ -727,22 +837,42 @@ def _write_text_report(
             f"lag_12={eda_summary['network_log_acf'][12]:.4f}"
         )
         lines.append(
-            f"- ACF demeaned log1p(РТО): lag_1={eda_summary['demeaned_log_acf'][1]:.4f}, "
-            f"lag_2={eda_summary['demeaned_log_acf'][2]:.4f}, lag_12={eda_summary['demeaned_log_acf'][12]:.4f}"
+            f"- ACF demeaned log1p(РТО): lag_2={eda_summary['demeaned_log_acf'][2]:.4f}, "
+            f"lag_4={eda_summary['demeaned_log_acf'][4]:.4f}, lag_6={eda_summary['demeaned_log_acf'][6]:.4f}"
         )
         lines.append(
-            f"- ACF лог-роста: lag_1={eda_summary['growth_acf'][1]:.4f}, lag_4={eda_summary['growth_acf'][4]:.4f}, "
-            f"lag_6={eda_summary['growth_acf'][6]:.4f}"
+            f"- ACF лог-роста: lag_1={eda_summary['growth_acf'][1]:.4f}, "
+            f"lag_4={eda_summary['growth_acf'][4]:.4f}, lag_6={eda_summary['growth_acf'][6]:.4f}"
         )
-        lines.append("")
+    else:
+        lines.append("- EDA не запускался в этом режиме.")
+    lines.append("")
+    lines.append("Проверки leakage и качества фичей")
+    lines.append(f"- rolling_shift_check_passed: {feature_checks['rolling_shift_check_passed']}")
+    lines.append(f"- дублей после подготовки фичей: {feature_checks['dup_store_month']}")
+    lines.append(f"- полностью пустых колонок после сборки: {len(feature_checks['all_nan_columns'])}")
+    lines.append("")
+    lines.append("Reference top-100")
+    march_fold_value = "n/a" if reference_result.march_fold_mape is None else f"{reference_result.march_fold_mape:.4f}"
+    lines.append(
+        f"- {reference_result.name}: mean_mape={reference_result.mean_mape:.4f}, march_fold={march_fold_value}"
+    )
+    lines.append(f"- top_features: {', '.join(reference_result.top_features[:10])}")
     lines.append("")
     lines.append("Быстрые эксперименты")
     for _, row in results_df.iterrows():
         lines.append(
             f"- {row['name']}: mean_mape={row['mean_mape']:.4f}, "
             f"march_fold={row['march_fold_mape'] if pd.notna(row['march_fold_mape']) else 'n/a'}, "
-            f"groups={row['feature_groups']}"
+            f"feature_count={int(row['feature_count'])}, dropped_by_top100={int(row['dropped_by_top100'])}"
         )
+    lines.append("")
+    lines.append("Выбранный набор")
+    lines.append(
+        f"- {best_result.name}: mean_mape={best_result.mean_mape:.4f}, "
+        f"march_fold={best_result.march_fold_mape}, features={best_result.feature_count}"
+    )
+    lines.append(f"- top_features: {', '.join(best_result.top_features[:10])}")
     lines.append("")
     lines.append("Артефакты")
     for artifact in artifacts:
@@ -755,6 +885,9 @@ def main() -> None:
     parser.add_argument("--train", default="data/processed/v2.parquet")
     parser.add_argument("--config", default="configs/lgbm.yaml")
     parser.add_argument("--mode", choices=["all", "eda", "experiments"], default="all")
+    parser.add_argument("--top-n-features", type=int, default=100)
+    parser.add_argument("--quick-num-boost-round", type=int, default=300)
+    parser.add_argument("--quick-early-stopping-rounds", type=int, default=50)
     args = parser.parse_args()
 
     _ensure_dirs()
@@ -768,16 +901,15 @@ def main() -> None:
         artifacts.extend(eda_artifacts)
 
     if args.mode == "eda":
-        report_path = REPORTS_DIR / "feature_study_eda.txt"
-        _write_text_report(report_path, eda_summary, pd.DataFrame(), artifacts)
+        REPORT_PATH.write_text(json.dumps(eda_summary, ensure_ascii=False, indent=2), encoding="utf-8")
         print(f"EDA saved to {EDA_DIR}")
-        print(f"Report saved to {report_path}")
+        print(f"Report saved to {REPORT_PATH}")
         return
 
     base_cfg = load_yaml(args.config)
     base_cfg["seed_bag"] = [base_cfg.get("seed", 2026)]
-    base_cfg["params"]["num_boost_round"] = 400
-    base_cfg["params"]["early_stopping_rounds"] = 60
+    base_cfg["params"]["num_boost_round"] = args.quick_num_boost_round
+    base_cfg["params"]["early_stopping_rounds"] = args.quick_early_stopping_rounds
     base_cfg["cv_val_months"] = [[2025, 2], [2024, 12], [2024, 3]]
 
     df_feat, all_feature_cols, cat_features, y_train_all, _, full_audit = _prepare(
@@ -786,6 +918,7 @@ def main() -> None:
         winsorize_quantile=float(base_cfg.get("winsorize_quantile", 0.999)),
         feature_groups=None,
     )
+    feature_checks = _run_feature_checks(df_feat)
     print(
         "Подготовлен датасет для быстрых экспериментов:",
         f"rows={len(df_feat)}",
@@ -795,14 +928,52 @@ def main() -> None:
     print("Группы фичей:", {k: len(v) for k, v in get_feature_groups(all_feature_cols).items()})
 
     folds = default_folds(df_feat, val_months=[tuple(x) for x in base_cfg["cv_val_months"]])
+    candidate_groups = [
+        "static_calendar",
+        "target_encoding",
+        "basic_lags",
+        "x5_public",
+        "rolling",
+        "growth_ratio",
+        "seasonality",
+        "group_aggregates",
+        "anomaly_residual",
+        "dynamic_covariates",
+        "external_macro",
+        "ets",
+    ]
+
+    reference_cfg = {
+        **base_cfg,
+        "name": "lgbm_reference_top100",
+        "save_oof": False,
+        "skip_final_train": True,
+    }
+    reference_result = run_log_experiment(
+        df_feat=df_feat,
+        all_feature_cols=all_feature_cols,
+        cat_features=cat_features,
+        y_train_all=y_train_all,
+        config=reference_cfg,
+        feature_groups=candidate_groups,
+        folds=folds,
+        comment="Reference-модель на полном кандидатном наборе для отбора top-100.",
+        allowed_features=None,
+    )
+    if reference_result.feature_importance is None or reference_result.feature_importance.empty:
+        raise RuntimeError("Не удалось получить feature importance у reference-модели.")
+
+    _write_feature_list(TOP100_PATH, reference_result.feature_importance, limit=args.top_n_features)
+    allowed_features = set(reference_result.feature_importance.head(args.top_n_features).index.tolist())
+
     results: list[StudyResult] = []
     results.extend(run_baselines(df_feat, folds))
+    results.append(reference_result)
 
-    for exp_name, feature_groups, comment in _build_experiments(base_cfg):
+    for exp_name, feature_groups, comment in _build_experiments():
         cfg = {
             **base_cfg,
             "name": exp_name,
-            "feature_groups": feature_groups,
             "save_oof": False,
             "skip_final_train": True,
         }
@@ -815,15 +986,20 @@ def main() -> None:
             feature_groups=feature_groups,
             folds=folds,
             comment=comment,
+            allowed_features=allowed_features,
         )
         results.append(result)
         print(
             f"{result.name}: mean_mape={result.mean_mape:.4f}, "
-            f"march_fold={result.march_fold_mape}, features={result.feature_count}"
+            f"march_fold={result.march_fold_mape}, features={result.feature_count}, "
+            f"dropped_by_top100={result.dropped_by_top100}"
         )
 
     model_results = [row for row in results if row.model != "baseline"]
-    best_log = min(model_results, key=lambda row: (row.mean_mape, math.inf if row.march_fold_mape is None else row.march_fold_mape))
+    best_log = min(
+        model_results,
+        key=lambda row: (row.mean_mape, math.inf if row.march_fold_mape is None else row.march_fold_mape),
+    )
 
     ratio_cfg = {
         **base_cfg,
@@ -840,6 +1016,7 @@ def main() -> None:
             feature_groups=best_log.feature_groups,
             folds=folds,
             mode="mom_ratio",
+            allowed_features=allowed_features,
         )
     )
     results.append(
@@ -851,14 +1028,13 @@ def main() -> None:
             feature_groups=best_log.feature_groups,
             folds=folds,
             mode="yoy_ratio",
+            allowed_features=allowed_features,
         )
     )
 
-    # Повторяем лучший log1p-эксперимент с OOF для графиков ошибок.
     best_oof_cfg = {
         **base_cfg,
         "name": f"{best_log.name}_oof",
-        "feature_groups": best_log.feature_groups,
         "save_oof": False,
         "skip_final_train": True,
     }
@@ -870,27 +1046,41 @@ def main() -> None:
         config=best_oof_cfg,
         feature_groups=best_log.feature_groups,
         folds=folds,
-        comment=f"{best_log.comment}; повтор для OOF-графиков",
+        comment=f"{best_log.comment} Повтор для OOF-графиков.",
+        allowed_features=allowed_features,
     )
+
+    _write_selected_features(SELECTED_FEATURES_PATH, best_log.selected_features)
 
     results_df = _result_rows(results)
-    results_path = REPORTS_DIR / "feature_study_results.csv"
-    results_df.to_csv(results_path, index=False, encoding="utf-8")
-
-    artifacts.extend(_save_experiment_plots(results_df))
+    results_df.to_csv(RESULTS_PATH, index=False, encoding="utf-8")
+    artifacts.extend(_save_experiment_plots(results_df, reference_result))
     artifacts.extend(_save_best_experiment_plots(df_feat, best_log_with_oof))
+    _write_text_report(
+        REPORT_PATH,
+        eda_summary=eda_summary,
+        feature_checks=feature_checks,
+        results_df=results_df,
+        reference_result=reference_result,
+        best_result=best_log,
+        artifacts=artifacts,
+    )
 
-    report_path = REPORTS_DIR / "feature_study_report.txt"
-    _write_text_report(report_path, eda_summary, results_df, artifacts)
-
-    print("\nЛучший быстрый log1p-эксперимент:")
+    full_run_cmd = (
+        f"uv run python scripts/run_experiment.py --config {args.config} "
+        f"--train {args.train} --feature-list-path {SELECTED_FEATURES_PATH.as_posix()}"
+    )
+    print("\nЛучший быстрый эксперимент:")
     print(
         f"  {best_log.name}: mean_mape={best_log.mean_mape:.4f}, "
-        f"march_fold={best_log.march_fold_mape}, groups={best_log.feature_groups}"
+        f"march_fold={best_log.march_fold_mape}, features={best_log.feature_count}"
     )
-    print(f"Таблица экспериментов: {results_path}")
-    print(f"Текстовый отчёт: {report_path}")
+    print(f"Top-100 список: {TOP100_PATH}")
+    print(f"Выбранные фичи: {SELECTED_FEATURES_PATH}")
+    print(f"Таблица экспериментов: {RESULTS_PATH}")
+    print(f"Текстовый отчёт: {REPORT_PATH}")
     print(f"EDA-артефакты: {EDA_DIR}")
+    print(f"Команда полного прогона: {full_run_cmd}")
 
 
 if __name__ == "__main__":

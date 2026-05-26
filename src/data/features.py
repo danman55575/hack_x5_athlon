@@ -351,11 +351,28 @@ def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFram
         df[f"grp_{key}_yoy_mean"] = expanding_mean_shifted(yoy, df[key])
         df[f"grp_{key}_yoy_median"] = expanding_quantile_shifted(yoy, df[key], 0.5)
 
+    if {"region", "area_cat"} <= set(df.columns):
+        group_key = df[["region", "area_cat"]].astype(str).agg("||".join, axis=1)
+        df["grp_region_area_lag1_mean"] = expanding_mean_shifted(df["_rto_lag1"], group_key)
+        df["grp_region_area_lag1_median"] = expanding_quantile_shifted(df["_rto_lag1"], group_key, 0.5)
+        df["grp_region_area_yoy_mean"] = expanding_mean_shifted(yoy, group_key)
+        df["grp_region_area_yoy_median"] = expanding_quantile_shifted(yoy, group_key, 0.5)
+
     df["grp_all_lag1_mean"] = df.groupby("t")["_rto_lag1"].transform("mean")
     df["grp_all_lag12_mean"] = df.groupby("t")["_rto_lag12"].transform("mean")
     yoy_macro = safe_divide(df["_rto_lag1"], df["_rto_lag13"])
     df["grp_all_yoy_macro_mean"] = yoy_macro.groupby(df["t"]).transform("mean")
     df["grp_all_yoy_macro_median"] = yoy_macro.groupby(df["t"]).transform("median")
+
+    alias_map = {
+        "region_rto_mean_lag_1": "grp_region_lag1_mean",
+        "city_rto_mean_lag_1": "grp_locality_lag1_mean",
+        "area_rto_mean_lag_1": "grp_area_cat_lag1_mean",
+        "region_area_rto_mean_lag_1": "grp_region_area_lag1_mean",
+    }
+    for alias, source in alias_map.items():
+        if source in df.columns:
+            df[alias] = df[source]
 
     df = df.drop(columns=["_rto_lag1", "_rto_lag12", "_rto_lag13"])
     df = df.sort_values("_orig_pos", kind="mergesort").reset_index(drop=True)
@@ -364,14 +381,23 @@ def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFram
 
 def add_group_seasonality_features(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
     df = add_prev_year_group_mean(df, target, ["region"], "region_month_rto_mean_lag12")
+    if {"region", "area_cat"} <= set(df.columns):
+        df = add_prev_year_group_mean(df, target, ["region", "area_cat"], "region_area_month_rto_mean_lag12")
     df = compute_historical_march_feb_ratio(df, target, [], "global")
     for prefix, group_cols in (
         ("region", ["region"]),
         ("locality", ["locality"]),
+        ("area", ["area_cat"]),
     ):
         df = compute_historical_march_feb_ratio(df, target, group_cols, prefix)
 
     df["region_march_feb_ratio"] = df["region_march_feb_ratio"].fillna(df["global_march_feb_ratio"])
+    if "area_march_feb_ratio" in df.columns:
+        df["area_march_feb_ratio"] = (
+            pd.Series(df["area_march_feb_ratio"], copy=False)
+            .fillna(df["region_march_feb_ratio"])
+            .fillna(df["global_march_feb_ratio"])
+        )
 
     use_locality = df["locality_march_feb_ratio_hist_pairs"] >= 50
     df["city_march_feb_ratio"] = np.where(
@@ -380,7 +406,6 @@ def add_group_seasonality_features(df: pd.DataFrame, target: str = "rto") -> pd.
         df["region_march_feb_ratio"],
     )
     df["city_march_feb_ratio"] = pd.Series(df["city_march_feb_ratio"]).fillna(df["global_march_feb_ratio"])
-    df.drop(columns=["global_march_feb_ratio", "global_march_feb_ratio_hist_pairs"], inplace=True)
     return df
 
 
@@ -425,6 +450,7 @@ def downcast(df):
 
 def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
     groups = {
+        "x5_public": [],
         "external_macro": [],
         "ets": [],
         "target_encoding": [],
@@ -457,7 +483,9 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
     }
 
     for col in feature_cols:
-        if col.startswith(EXTERNAL_MACRO_PREFIXES):
+        if col.startswith("x5pub_"):
+            groups["x5_public"].append(col)
+        elif col.startswith(EXTERNAL_MACRO_PREFIXES):
             groups["external_macro"].append(col)
         elif col.startswith("ets_"):
             groups["ets"].append(col)
