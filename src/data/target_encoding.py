@@ -1,9 +1,4 @@
 """KFold target encoding по time-aware схеме.
-
-Изменение vs предыдущей версии: устранена микро-утечка через global_mean.
-Раньше smoothing prior считался как mean(target) по ВСЕМУ датасету, включая
-будущие периоды. Теперь prior сам по себе time-aware: для каждого t используется
-cumulative mean по строкам с t' < t.
 """
 from __future__ import annotations
 import numpy as np
@@ -17,6 +12,7 @@ def expanding_target_encode(df: pd.DataFrame, cat_col: str, target: str = "rto",
 
     Smoothing prior — это глобальное среднее target по строкам с t' < t (без утечки).
     Категорный mean — expanding по t (без утечки).
+    Финальный fallback при NaN — тоже time-aware prior, а не global mean.
     """
     df = df.copy()
     df["_orig_idx"] = np.arange(len(df), dtype=np.int64)
@@ -28,14 +24,14 @@ def expanding_target_encode(df: pd.DataFrame, cat_col: str, target: str = "rto",
              .sort_values(time_col))
     t_agg["sum"] = t_agg["sum"].fillna(0.0)
     t_agg["count"] = t_agg["count"].fillna(0).astype(np.int64)
-    # cumsum().shift(1) = накопление СТРОГО до текущего t (исключая сам t)
     t_agg["cum_sum"] = t_agg["sum"].cumsum().shift(1, fill_value=0.0)
     t_agg["cum_cnt"] = t_agg["count"].cumsum().shift(1, fill_value=0).astype(np.int64)
-    overall_mean = float(df[target].dropna().mean()) if df[target].notna().any() else 0.0
+    first_nonempty_mean = float(df.loc[df[target].notna(), target].iloc[:max(1, int(df[target].notna().sum() // 26))].mean()) \
+        if df[target].notna().any() else 0.0
     t_agg["prior"] = np.where(
         t_agg["cum_cnt"] > 0,
         t_agg["cum_sum"] / np.maximum(t_agg["cum_cnt"], 1),
-        overall_mean,
+        first_nonempty_mean,
     )
     prior_by_t = dict(zip(t_agg[time_col].values, t_agg["prior"].values.astype(np.float64)))
 
@@ -49,16 +45,23 @@ def expanding_target_encode(df: pd.DataFrame, cat_col: str, target: str = "rto",
     grouped["cum_sum"] = grouped.groupby(cat_col)["sum"].cumsum() - grouped["sum"]
     grouped["cum_cnt"] = grouped.groupby(cat_col)["count"].cumsum() - grouped["count"]
     grouped["prior"] = grouped[time_col].map(prior_by_t).astype(np.float64)
-    grouped["prior"] = grouped["prior"].fillna(overall_mean)
+    grouped["prior"] = grouped["prior"].fillna(first_nonempty_mean)
     grouped["te"] = (grouped["cum_sum"] + smoothing * grouped["prior"]) / (grouped["cum_cnt"] + smoothing)
     low_mask = grouped["cum_cnt"] < min_samples
     grouped.loc[low_mask, "te"] = grouped.loc[low_mask, "prior"]
 
     out = df.merge(grouped[[cat_col, time_col, "te"]], on=[cat_col, time_col], how="left")
     out = out.sort_values("_orig_idx", kind="stable")
-    te = out["te"].astype(np.float32).values
-    te = np.where(np.isnan(te), np.float32(overall_mean), te)
-    return te
+
+    # Time-aware fallback вместо global overall_mean.
+    te = out["te"].astype(np.float64).values
+    nan_mask = np.isnan(te)
+    if nan_mask.any():
+        prior_series = out["t"].map(prior_by_t).astype(np.float64).values
+        te = np.where(nan_mask, prior_series, te)
+        # Если и prior_by_t NaN (для самого раннего t) — используем first_nonempty_mean
+        te = np.where(np.isnan(te), first_nonempty_mean, te)
+    return te.astype(np.float32)
 
 
 def add_target_encodings(df: pd.DataFrame, target: str = "rto",

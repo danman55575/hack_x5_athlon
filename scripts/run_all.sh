@@ -13,8 +13,6 @@ python -m scripts.run_pipeline --stage ets
 
 echo "=== LightGBM L1 ==="
 python -m scripts.run_experiment --config configs/lgbm.yaml --train $TRAIN_PATH
-echo "=== LightGBM MAPE-weight ==="
-python -m scripts.run_experiment --config configs/lgbm_mape.yaml --train $TRAIN_PATH
 echo "=== LightGBM Tweedie ==="
 python -m scripts.run_experiment --config configs/lgbm_tweedie.yaml --train $TRAIN_PATH
 echo "=== XGBoost ==="

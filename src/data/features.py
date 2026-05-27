@@ -1,7 +1,4 @@
 """Безутечковая фичегенерация для помесячного прогноза РТО.
-
-Все временные фичи строятся только из прошлого через ``shift(1)`` или более
-дальний сдвиг. Target encoding добавляется отдельно в pipeline.
 """
 from __future__ import annotations
 
@@ -18,7 +15,6 @@ def add_region_spendings(
     df: pd.DataFrame,
     spendings_file: str = "data/processed/region_spendings.csv",
 ) -> pd.DataFrame:
-    """Добавляет региональные расходы в ценах марта 2025 года."""
     spendings_df = pd.read_csv(spendings_file)
     return df.merge(
         spendings_df[["year", "month", "region", "region_spendings_inflated"]],
@@ -31,14 +27,7 @@ def add_external_macro_features(
     df: pd.DataFrame,
     spendings_file: str = "data/processed/region_spendings.csv",
 ) -> pd.DataFrame:
-    """Adds external macro features from inflation and regional spendings tables.
-
-    The features are designed to remain available for the forecast month even when
-    current-month spendings are absent: lagged and rolling statistics are computed
-    on a full `(region, year, month)` panel derived from the modeling frame.
-    """
     df = df.copy()
-
     spendings_path = Path(spendings_file)
     if not spendings_path.exists():
         return df
@@ -60,8 +49,6 @@ def add_external_macro_features(
 
     region_g = region_panel.groupby("region")["region_spendings_inflated"]
     region_panel["region_spendings_lag_1"] = region_g.shift(1)
-    region_panel["region_spendings_lag_2"] = region_g.shift(2)
-    region_panel["region_spendings_lag_3"] = region_g.shift(3)
     region_panel["region_spendings_lag_12"] = region_g.shift(12)
 
     shifted_region_spend = region_g.shift(1)
@@ -71,17 +58,6 @@ def add_external_macro_features(
         .rolling(window=3, min_periods=1)
         .mean()
         .reset_index(level=0, drop=True)
-    )
-    region_panel["region_spendings_rmean_12"] = (
-        shifted_region_spend
-        .groupby(region_panel["region"])
-        .rolling(window=12, min_periods=3)
-        .mean()
-        .reset_index(level=0, drop=True)
-    )
-    region_panel["region_spendings_mom_ratio"] = safe_divide(
-        region_panel["region_spendings_lag_1"],
-        region_panel["region_spendings_lag_2"],
     )
     region_panel["region_spendings_yoy_ratio"] = safe_divide(
         region_panel["region_spendings_lag_1"],
@@ -98,12 +74,8 @@ def add_external_macro_features(
         "region",
         "region_spendings_inflated",
         "region_spendings_lag_1",
-        "region_spendings_lag_2",
-        "region_spendings_lag_3",
         "region_spendings_lag_12",
         "region_spendings_rmean_3",
-        "region_spendings_rmean_12",
-        "region_spendings_mom_ratio",
         "region_spendings_yoy_ratio",
         "region_spendings_lag1_to_rmean3",
     ]
@@ -111,53 +83,28 @@ def add_external_macro_features(
 
 
 def add_cci_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Adds Consumer Confidence Index (CCI) features with lags and rolling stats.
-    
-    CCI is a global macro feature that doesn't vary by region/store.
-    Lags and rolling statistics are computed to capture temporal patterns.
-    """
+    """CCI: глобальный макро-сигнал; оставляем cci и cci_diff_1."""
     df = df.copy()
-    
-    # Map CCI values from the CCI dictionary using (year, month)
     cci_values = np.array([
-        CCI.get((year, month), np.nan)
-        for year, month in zip(df["year"].values, df["month"].values)
+        CCI.get((year, quarter), np.nan)
+        for year, quarter in zip(df["year"].values, df["quarter"].values)
     ], dtype=np.float64)
-    
     df["cci"] = cci_values
-    
-    # Create lags of CCI (using month as the time unit)
-    # CCI doesn't vary by store, so we can group by t (time period) instead
     cci_panel = df[["year", "quarter", "t", "cci"]].drop_duplicates().sort_values("t").reset_index(drop=True)
-    cci_series = cci_panel["cci"]
-    
-    cci_panel["cci_lag_1"] = cci_series.shift(1)
-    cci_panel["cci_lag_2"] = cci_series.shift(2)
-    cci_panel["cci_lag_4"] = cci_series.shift(4)
-
-
-    # CCI momentum (difference between current and lagged)
+    cci_panel["cci_lag_1"] = cci_panel["cci"].shift(1)
     cci_panel["cci_diff_1"] = cci_panel["cci"] - cci_panel["cci_lag_1"]
-    cci_panel["cci_diff_4"] = cci_panel["cci"] - cci_panel["cci_lag_4"]
-    
-    cci_cols = [
-        "year", "quarter", "t",
-        "cci", "cci_lag_1", "cci_lag_2",
-        "cci_diff_1"
-    ]
-    
-    # Merge back to main dataframe
-    cci_merge = cci_panel[cci_cols]
-    df = df.drop(columns=["cci", "cci_lag_4"], errors="ignore")
-    df = df.merge(cci_merge, on=["year", "quarter", "t"], how="left")
-    
+    cci_cols = ["year", "quarter", "t", "cci", "cci_diff_1"]
+    df = df.drop(columns=["cci"], errors="ignore")
+    df = df.merge(cci_panel[cci_cols], on=["year", "quarter", "t"], how="left")
     return df
 
 
 def add_lag_features(
     df: pd.DataFrame,
     target: str = "rto",
-    lags: tuple[int, ...] = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18),
+    # ВАЖНО: сокращённый набор лагов. Раньше было 1..18, что для месячных данных
+    # розницы добавляло шум на лагах 5,7,8,9,10,11,15-18.
+    lags: tuple[int, ...] = (1, 2, 3, 4, 6, 12, 13, 14),
     group: str = "store_id",
 ) -> pd.DataFrame:
     g = df.groupby(group)[target]
@@ -167,39 +114,30 @@ def add_lag_features(
 def add_rolling_features(
     df: pd.DataFrame,
     target: str = "rto",
-    windows: tuple[int, ...] = (2, 3, 4, 6, 12, 24),
+    windows: tuple[int, ...] = (3, 6, 12),
     group: str = "store_id",
 ) -> pd.DataFrame:
+    """Удалены дубли (rto_mean_N был копией rto_rmean_N), сокращён список окон."""
     shifted = df.groupby(group)[target].shift(1)
     new_cols: dict[str, pd.Series | np.ndarray] = {}
     for window in windows:
         roll = shifted.groupby(df[group]).rolling(window=window, min_periods=max(1, window // 3))
-        mean_col = f"{target}_rmean_{window}"
-        std_col = f"{target}_rstd_{window}"
-        min_col = f"{target}_rmin_{window}"
-        max_col = f"{target}_rmax_{window}"
-        median_col = f"{target}_rmedian_{window}"
+        new_cols[f"{target}_rmean_{window}"] = roll.mean().reset_index(level=0, drop=True)
+        new_cols[f"{target}_rstd_{window}"] = roll.std().reset_index(level=0, drop=True)
+        new_cols[f"{target}_rmedian_{window}"] = roll.median().reset_index(level=0, drop=True)
 
-        new_cols[mean_col] = roll.mean().reset_index(level=0, drop=True)
-        new_cols[std_col] = roll.std().reset_index(level=0, drop=True)
-        new_cols[min_col] = roll.min().reset_index(level=0, drop=True)
-        new_cols[max_col] = roll.max().reset_index(level=0, drop=True)
-        new_cols[median_col] = roll.median().reset_index(level=0, drop=True)
+    # CV-фичи: std/mean. Стабильнее, чем raw std при сильно разных масштабах магазинов.
+    if f"{target}_rmean_3" in new_cols and f"{target}_rstd_3" in new_cols:
+        new_cols[f"{target}_cv_3"] = safe_divide(new_cols[f"{target}_rstd_3"], new_cols[f"{target}_rmean_3"])
+    if f"{target}_rmean_6" in new_cols and f"{target}_rstd_6" in new_cols:
+        new_cols[f"{target}_cv_6"] = safe_divide(new_cols[f"{target}_rstd_6"], new_cols[f"{target}_rmean_6"])
 
-    for window in (3, 6):
-        rmean_col = f"{target}_rmean_{window}"
-        if rmean_col in new_cols:
-            new_cols[f"{target}_mean_{window}"] = new_cols[rmean_col]
-    for window in (3, 6):
-        rstd_col = f"{target}_rstd_{window}"
-        if rstd_col in new_cols:
-            new_cols[f"{target}_std_{window}"] = new_cols[rstd_col]
+    # Алиасы для обратной совместимости с group/seasonal-фичами (через rmean_3, rmean_12)
+    if f"{target}_rmean_3" in new_cols:
+        new_cols[f"{target}_mean_3"] = new_cols[f"{target}_rmean_3"]
+    if f"{target}_rmean_12" in new_cols:
+        new_cols[f"{target}_mean_12"] = new_cols[f"{target}_rmean_12"]
 
-    if f"{target}_mean_3" in new_cols and f"{target}_std_3" in new_cols:
-        new_cols[f"{target}_cv_3"] = safe_divide(new_cols[f"{target}_std_3"], new_cols[f"{target}_mean_3"])
-
-    if f"{target}_mean_6" in new_cols and f"{target}_std_6" in new_cols:
-        new_cols[f"{target}_cv_6"] = safe_divide(new_cols[f"{target}_std_6"], new_cols[f"{target}_mean_6"])
     return with_columns(df, new_cols)
 
 
@@ -216,10 +154,7 @@ def add_diff_features(df: pd.DataFrame, target: str = "rto", group: str = "store
         {
             f"{target}_diff_1": lag1 - lag2,
             f"{target}_diff_2": lag2 - lag3,
-            f"{target}_diff2_1": lag1 - 2*lag2 + lag3,
             f"{target}_pct_1": safe_divide(lag1 - lag2, lag2),
-            f"{target}_pct_2": safe_divide(lag2 - lag3, lag3),
-            f"{target}_diff_6": lag1 - lag6,
             f"{target}_pct_6": safe_divide(lag1 - lag6, lag6),
             f"{target}_yoy_diff": lag1 - lag12,
             f"{target}_yoy_ratio": safe_divide(lag1, lag12),
@@ -237,24 +172,15 @@ def add_growth_ratio_features(
     lag1 = g.shift(1)
     lag2 = g.shift(2)
     lag3 = g.shift(3)
-    lag4 = g.shift(4)
-    lag5 = g.shift(5)
-    lag6 = g.shift(6)
-    lag7 = g.shift(7)
     lag12 = g.shift(12)
     lag13 = g.shift(13)
-    lag14 = g.shift(14)
 
     new_cols: dict[str, pd.Series | np.ndarray] = {
         "log_growth_lag_1": np.log(safe_divide(lag1, lag2)),
         "log_growth_lag_2": np.log(safe_divide(lag2, lag3)),
-        "log_growth_lag_4": np.log(safe_divide(lag4, lag5)),
-        "log_growth_lag_6": np.log(safe_divide(lag6, lag7)),
         f"{target}_lag_1_div_lag_2": safe_divide(lag1, lag2),
-        f"{target}_lag_2_div_lag_4": safe_divide(lag2, lag4),
         f"{target}_lag_12_div_lag_13": safe_divide(lag12, lag13),
         f"{target}_lag_1_div_lag_12": safe_divide(lag1, lag12),
-        f"{target}_lag_2_div_lag_14": safe_divide(lag2, lag14),
     }
     new_cols["abs_log_growth_lag_1"] = pd.Series(new_cols["log_growth_lag_1"], copy=False).abs()
     if f"{target}_mean_3" in df.columns:
@@ -273,7 +199,6 @@ def add_growth_ratio_features(
 def add_seasonal_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
     g = df.groupby(group)[target]
     same_month_1y = g.shift(12)
-    same_month_2y = g.shift(24)
     lag12 = g.shift(12)
     lag24 = g.shift(24)
     season_trend = safe_divide(lag12, lag24)
@@ -281,14 +206,13 @@ def add_seasonal_features(df: pd.DataFrame, target: str = "rto", group: str = "s
         df,
         {
             f"{target}_same_month_1y": same_month_1y,
-            f"{target}_same_month_2y": same_month_2y,
-            f"{target}_same_month_mean": pd.concat([same_month_1y, same_month_2y], axis=1).mean(axis=1),
             f"{target}_naive_seasonal": same_month_1y * season_trend,
         },
     )
 
 
 def add_trend_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
+    """Оставлен только slope_12 — более длинное окно стабильнее коротких."""
     shifted = df.groupby(group)[target].shift(1)
 
     def _rolling_slope(arr: pd.Series) -> float:
@@ -306,17 +230,21 @@ def add_trend_features(df: pd.DataFrame, target: str = "rto", group: str = "stor
         return float((x_centered * y_centered).sum() / denom)
 
     new_cols: dict[str, pd.Series | np.ndarray] = {}
-    for window in (3, 6, 12):
-        new_cols[f"{target}_slope_{window}"] = (
-            shifted.groupby(df[group])
-            .rolling(window=window, min_periods=3)
-            .apply(_rolling_slope, raw=False)
-            .reset_index(level=0, drop=True)
-        )
+    new_cols[f"{target}_slope_12"] = (
+        shifted.groupby(df[group])
+        .rolling(window=12, min_periods=3)
+        .apply(_rolling_slope, raw=False)
+        .reset_index(level=0, drop=True)
+    )
     return with_columns(df, new_cols)
 
 
 def add_expanding_stats(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
+    """Оставлены только cummean и lag1_to_cummean.
+
+    cummin/cummax/cumstd монотонно растут со временем для типичного магазина с трендом,
+    что даёт модели неявную «date-feature» через store-history и потенциальный date-leakage.
+    """
     shifted = df.groupby(group)[target].shift(1)
     expanding = shifted.groupby(df[group]).expanding()
     cummean = expanding.mean().reset_index(level=0, drop=True)
@@ -324,9 +252,6 @@ def add_expanding_stats(df: pd.DataFrame, target: str = "rto", group: str = "sto
         df,
         {
             f"{target}_cummean": cummean,
-            f"{target}_cumstd": expanding.std().reset_index(level=0, drop=True),
-            f"{target}_cummax": expanding.max().reset_index(level=0, drop=True),
-            f"{target}_cummin": expanding.min().reset_index(level=0, drop=True),
             f"{target}_lag1_to_cummean": safe_divide(df.groupby(group)[target].shift(1), cummean),
         },
     )
@@ -344,9 +269,6 @@ def add_dynamic_lags(df: pd.DataFrame, group: str = "store_id") -> pd.DataFrame:
         new_cols[f"{col}_lag_12"] = g.shift(12)
         new_cols[f"{col}_rmean_3"] = (
             shifted.groupby(df[group]).rolling(3, min_periods=1).mean().reset_index(level=0, drop=True)
-        )
-        new_cols[f"{col}_rmean_12"] = (
-            shifted.groupby(df[group]).rolling(12, min_periods=3).mean().reset_index(level=0, drop=True)
         )
     return with_columns(df, new_cols)
 
@@ -374,7 +296,6 @@ def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store_id") -> pd.DataFrame:
-    """Нормирует ключевые лаги на длину месяца."""
     if "days_in_month" not in df.columns:
         return df
 
@@ -384,7 +305,6 @@ def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store
     days_in_month_lag_12 = g_dim.shift(12).astype(np.float32)
     new_cols: dict[str, pd.Series | np.ndarray] = {
         "days_in_month_lag_1": days_in_month_lag_1,
-        "days_in_month_lag_12": days_in_month_lag_12,
         "days_ratio_curr_to_lag1": safe_divide(days_in_month, days_in_month_lag_1).astype(np.float32),
         "days_ratio_curr_to_lag12": safe_divide(days_in_month, days_in_month_lag_12).astype(np.float32),
     }
@@ -415,7 +335,6 @@ def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store
 
 
 def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
-    """Кросс-магазинные агрегаты только из уже известных лагов."""
     df = df.copy().reset_index(drop=True)
     df["_orig_pos"] = np.arange(len(df), dtype=np.int64)
     df["_rto_lag1"] = df.groupby("store_id")[target].shift(1)
@@ -469,18 +388,31 @@ def encode_categoricals_ordinal(
     df: pd.DataFrame,
     cat_cols: list[str] | tuple[str, ...] = CAT_COLS,
 ) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    """Ordinal: cat.codes + 1, чтобы NaN→0 (а не -1) и не было phantom-класса."""
     mappings: dict[str, list[str]] = {}
     for col in cat_cols:
         if col not in df.columns:
             continue
         df[col] = df[col].astype("category")
         mappings[col] = list(df[col].cat.categories)
-        df[col] = df[col].cat.codes.astype(np.int32)
+        # КРИТИЧНО: +1 чтобы NaN-код (-1) превратился в 0, а реальные категории — в 1..N.
+        df[col] = (df[col].cat.codes.astype(np.int32) + np.int32(1))
     return df, mappings
 
 
+def encode_categoricals_native(
+    df: pd.DataFrame,
+    cat_cols: list[str] | tuple[str, ...] = CAT_COLS,
+) -> pd.DataFrame:
+    """Native: оставляем pandas category dtype. Для XGBoost (enable_categorical=True),
+    LightGBM (auto-detect) и CatBoost (через Pool.cat_features)."""
+    for col in cat_cols:
+        if col in df.columns:
+            df[col] = df[col].astype("category")
+    return df
+
+
 def downcast(df):
-    # Assume df is already copied if needed
     for c in df.select_dtypes(include="float64").columns:
         df[c] = df[c].astype(np.float32)
     for c in df.select_dtypes(include="int64").columns:
@@ -492,7 +424,6 @@ def downcast(df):
 
 
 def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
-    """Разбивает список фичей на логические группы для абляций."""
     groups = {
         "external_macro": [],
         "ets": [],
@@ -509,45 +440,20 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
     }
 
     basic_lag_re = re.compile(r"^rto_lag_(1|2|3|4|6|12|13|14)$")
-    rolling_names = {
-        "rto_cv_3",
-        "rto_cv_6"
-    }
+    rolling_names = {"rto_cv_3", "rto_cv_6"}
     growth_names = {
-        "rto_diff_1",
-        "rto_diff_2",
-        "rto_diff2_1",
-        "rto_diff_6",
-        "rto_pct_1",
-        "rto_pct_2",
-        "rto_pct_6",
-        "rto_yoy_diff",
-        "rto_yoy_ratio",
-        "rto_log_ratio_1_12",
-        "log_growth_lag_1",
-        "log_growth_lag_2",
-        "log_growth_lag_4",
-        "log_growth_lag_6",
-        "rto_lag_1_div_lag_2",
-        "rto_lag_2_div_lag_4",
-        "rto_lag_1_div_mean_3",
+        "rto_diff_1", "rto_diff_2", "rto_pct_1", "rto_pct_6",
+        "rto_yoy_diff", "rto_yoy_ratio", "rto_log_ratio_1_12",
+        "log_growth_lag_1", "log_growth_lag_2",
+        "rto_lag_1_div_lag_2", "rto_lag_1_div_mean_3",
         "rto_mean_3_div_mean_12",
     }
     seasonal_names = {
-        "rto_same_month_1y",
-        "rto_same_month_2y",
-        "rto_same_month_mean",
-        "rto_naive_seasonal",
-        "rto_ratio_lag1_sm1y",
-        "rto_lag_12_div_lag_13",
-        "rto_lag_1_div_lag_12",
-        "rto_lag_2_div_lag_14",
+        "rto_same_month_1y", "rto_naive_seasonal",
+        "rto_lag_12_div_lag_13", "rto_lag_1_div_lag_12",
         "rto_seasonal_ratio_baseline",
-        "rto_lag_12_per_day",
-        "rto_per_day_yoy_ratio",
-        "global_march_feb_ratio",
-        "region_march_feb_ratio",
-        "city_march_feb_ratio",
+        "rto_lag_12_per_day", "rto_per_day_yoy_ratio",
+        "global_march_feb_ratio", "region_march_feb_ratio", "city_march_feb_ratio",
     }
 
     for col in feature_cols:
@@ -595,8 +501,19 @@ def select_feature_columns(feature_cols: list[str], feature_groups: list[str] | 
     return [col for col in feature_cols if col in selected]
 
 
+def build_features(
+    df: pd.DataFrame,
+    target: str = "rto",
+    cat_encoding: str = "native",
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """Главный билдер фичей.
 
-def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame, list[str], list[str]]:
+    cat_encoding:
+        "native" — оставить CAT_COLS как pandas category dtype. Подходит для
+            LightGBM, XGBoost (enable_categorical=True), CatBoost.
+        "ordinal" — закодировать целыми (cat.codes + 1, NaN→0). Подходит для
+            Ridge/MLP, которые не умеют категории.
+    """
     df = df.sort_values(["store_id", "t"]).copy().reset_index(drop=True)
     df = add_external_macro_features(df)
     df = add_lag_features(df, target=target)
@@ -614,10 +531,33 @@ def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame,
     df = add_group_aggregations(df, target=target)
     df = add_group_seasonality_features(df, target=target)
     df = df.copy()
-    df, _ = encode_categoricals_ordinal(df)
+
+    if cat_encoding == "ordinal":
+        df, _ = encode_categoricals_ordinal(df)
+    elif cat_encoding == "native":
+        df = encode_categoricals_native(df)
+    else:
+        raise ValueError(f"Unknown cat_encoding: {cat_encoding}")
+
     df = downcast(df)
 
     drop_cols = {target, "store_id", "year", "t", "month"} | set(DYNAMIC_COLS)
     feature_cols = [col for col in df.columns if col not in drop_cols]
     cat_features = [col for col in CAT_COLS if col in feature_cols]
     return df, feature_cols, cat_features
+
+
+def audit_and_clean_features(df: pd.DataFrame, feature_cols: list[str]) -> tuple[pd.DataFrame, list[str]]:
+    """Удаляет полностью пустые фичи и заменяет inf на NaN."""
+    audit = audit_feature_frame(df, feature_cols)
+    all_nan = set(audit["all_nan_columns"])
+    if all_nan:
+        feature_cols = [c for c in feature_cols if c not in all_nan]
+
+    # Заменяем inf/-inf на NaN только в числовых колонках (категории не трогаем).
+    numeric_feats = [c for c in feature_cols if df[c].dtype.kind in "fi"]
+    if numeric_feats:
+        # inplace через assign в фичах
+        sub = df[numeric_feats].replace([np.inf, -np.inf], np.nan)
+        df[numeric_feats] = sub
+    return df, feature_cols

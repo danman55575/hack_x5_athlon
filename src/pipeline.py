@@ -9,7 +9,12 @@ import pandas as pd
 
 from .data.loader import load_raw, add_target_row_for_march_2025
 from .data.target_encoding import add_target_encodings
-from .data.features import audit_feature_frame, build_features, select_feature_columns
+from .data.features import (
+    audit_feature_frame,
+    audit_and_clean_features,
+    build_features,
+    select_feature_columns,
+)
 from .validation.cv import default_folds, predict_split
 from .validation.metrics import mape, mape_to_score
 from .models.gbm import MODEL_REGISTRY
@@ -22,9 +27,10 @@ from .utils.io import save_json, save_pickle
 
 ALL_MODELS = {**MODEL_REGISTRY, "linear": LinearModel, "mlp": MLPModel}
 
-# Hackathon submission requirements
 EXPECTED_SUBMISSION_ROWS = 18657
-MAX_SUBMISSION_FILE_SIZE = 1_000_000  # 1 MB
+MAX_SUBMISSION_FILE_SIZE = 1_000_000
+
+ORDINAL_MODELS = {"linear", "mlp"}
 
 
 def get_model(name, params=None):
@@ -33,11 +39,14 @@ def get_model(name, params=None):
     return ALL_MODELS[name](params or {})
 
 
-def _prepare(train_path, target_transform, winsorize_quantile, feature_groups=None):
+def _prepare(train_path, target_transform, winsorize_quantile,
+             feature_groups=None, model_name: str | None = None):
     df = load_raw(train_path)
     df = add_target_row_for_march_2025(df)
     df = add_target_encodings(df, target="rto")
-    df_feat, feat_cols, cat_features = build_features(df, target="rto")
+
+    cat_encoding = "ordinal" if (model_name in ORDINAL_MODELS) else "native"
+    df_feat, feat_cols, cat_features = build_features(df, target="rto", cat_encoding=cat_encoding)
     df_feat = df_feat.reset_index(drop=True)
 
     ets_path = Path("data/processed/ets_features.parquet")
@@ -54,6 +63,11 @@ def _prepare(train_path, target_transform, winsorize_quantile, feature_groups=No
         cat_features = [c for c in cat_features if c in feat_cols]
 
     df_feat = df_feat.copy()
+
+    # ОЧИСТКА: удаляем all-NaN фичи и заменяем inf на NaN.
+    df_feat, feat_cols = audit_and_clean_features(df_feat, feat_cols)
+    cat_features = [c for c in cat_features if c in feat_cols]
+
     feature_audit = audit_feature_frame(df_feat, feat_cols)
 
     cap = df_feat["rto"].quantile(winsorize_quantile)
@@ -138,15 +152,12 @@ def _weighted_geom_mean_iters(per_fold_data, multiplier, logger=None):
 
 
 def _sanity_cap(df_pred_rows: pd.DataFrame, pred: np.ndarray, logger,
-                up_mul: float = 2.0, down_mul: float = 0.5,
+                up_mul: float = 3.0, down_mul: float = 0.35,
                 dump_path: Path | None = None,
                 tag: str = "") -> np.ndarray:
-    """Мягкая защита от единичных экстремальных предсказаний.
-
-    Если pred/lag1 выходит за [down_mul, up_mul] — заменяем на медиану от безопасных
-    fallback-предсказаний. Данные УЖЕ нормированы под цены марта 2025.
-
-    Логируем заменённые new_id вместе с original/replacement в CSV (если dump_path задан).
+    """Мягкая защита от единичных экстремальных предсказаний. По умолчанию пороги
+    [0.35, 3.0] — более либеральные, чтобы не резать реальный рост у быстрорастущих
+    магазинов (особенно курортные регионы, новые магазины).
     """
     pred = np.asarray(pred, dtype=np.float64).copy()
     lag1 = df_pred_rows.get("rto_lag_1", pd.Series(np.nan)).values.astype(np.float64)
@@ -204,15 +215,6 @@ def _sanity_cap(df_pred_rows: pd.DataFrame, pred: np.ndarray, logger,
 
 def _validate_submission(submission: pd.DataFrame, logger,
                           expected_rows: int = EXPECTED_SUBMISSION_ROWS) -> None:
-    """Жёсткая валидация формата посылки ПЕРЕД сохранением.
-
-    Проверки соответствуют требованиям хакатона:
-    - ровно 18657 строк
-    - колонки {new_id, rto}
-    - уникальные new_id, без NaN
-    - все rto конечны и > 0
-    Любое нарушение → AssertionError (намеренный cras).
-    """
     assert set(submission.columns) == {"new_id", "rto"}, (
         f"Submission must have exactly columns {{new_id, rto}}, "
         f"got {list(submission.columns)}"
@@ -257,7 +259,6 @@ def _compute_segment_mapes(
     df_valid: pd.DataFrame,
     pred_orig: np.ndarray,
 ) -> dict[str, float]:
-    """Считает MAPE по сегментам магазинов на основе масштаба train-fold."""
     store_scale = df_train.groupby("store_id")["rto"].mean()
     if len(store_scale) < 3:
         return {}
@@ -298,11 +299,10 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     seeds = list(seeds)
     logger.info(f"Seed bag in use: {seeds} ({len(seeds)} seeds)")
 
-    final_iter_multiplier = float(config.get("final_iter_multiplier", 1.10))
+    final_iter_multiplier = float(config.get("final_iter_multiplier", 1.20))
 
-    # Конфигурируемые пороги sanity cap
-    sanity_up = float(config.get("sanity_cap_up", 2.0))
-    sanity_down = float(config.get("sanity_cap_down", 0.5))
+    sanity_up = float(config.get("sanity_cap_up", 3.0))
+    sanity_down = float(config.get("sanity_cap_down", 0.35))
     apply_cap_in_cv = bool(config.get("apply_sanity_cap_in_cv", True))
 
     df_feat, feat_cols, cat_features, y_train_all, inv, feature_audit = _prepare(
@@ -310,23 +310,18 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         target_transform,
         winsorize_q,
         feature_groups=feature_groups,
+        model_name=config["model"],
     )
     logger.info(f"Features: {len(feat_cols)}; rows: {len(df_feat)}")
     logger.info(
-        "Аудит фичей: total_nan=%s, nan_feature_count=%s, all_nan=%s, inf_cols=%s",
+        "Аудит фичей (после очистки): total_nan=%s, nan_feature_count=%s, inf_cols=%s",
         feature_audit["total_nan"],
         feature_audit["nan_feature_count"],
-        len(feature_audit["all_nan_columns"]),
         len(feature_audit["inf_columns"]),
     )
-    if feature_audit["all_nan_columns"]:
-        logger.warning(
-            "Полностью пустые фичи: %s",
-            feature_audit["all_nan_columns"][:10],
-        )
     if feature_audit["inf_columns"]:
         logger.warning(
-            "Фичи с inf: %s",
+            "Фичи с остаточным inf (не должны существовать после очистки): %s",
             feature_audit["inf_columns"][:10],
         )
 
@@ -336,7 +331,6 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
     folds = default_folds(df_feat, val_months=cv_val_months)
     logger.info(f"Folds: {[f.name for f in folds]}")
 
-    # ----- Веса фолдов и фильтр для финального num_iters -----
     cv_fold_weights = config.get("cv_fold_weights")
     if cv_fold_weights is None:
         cv_fold_weights = [1.0] * len(folds)

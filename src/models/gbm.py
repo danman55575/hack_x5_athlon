@@ -7,6 +7,30 @@ from catboost import CatBoostRegressor, Pool
 from .base import BaseModel
 
 
+def _prepare_cat_columns_for_catboost(X: pd.DataFrame, cat_features: list[str]) -> pd.DataFrame:
+    """CatBoost требует, чтобы категориальные колонки были строками или неотрицательными int.
+    Преобразуем category dtype → string, NaN → '__NA__'.
+    """
+    if not cat_features:
+        return X
+    X = X.copy()
+    for col in cat_features:
+        if col not in X.columns:
+            continue
+        s = X[col]
+        if pd.api.types.is_categorical_dtype(s):
+            s = s.astype(str)
+        elif s.dtype.kind in "iuf":
+            # Если числовой, шифтуем коды от 0 (на случай -1 от cat.codes для NaN).
+            s = s.astype(str)
+        else:
+            s = s.astype(str)
+        s = s.replace({"nan": "__NA__", "NaN": "__NA__", "<NA>": "__NA__", "-1": "__NA__"})
+        s = s.fillna("__NA__")
+        X[col] = s
+    return X
+
+
 class LightGBMModel(BaseModel):
     name = "lightgbm"
     default_params = {
@@ -147,17 +171,24 @@ class CatBoostModel(BaseModel):
             for k in ("od_type", "od_wait", "od_pval"):
                 params.pop(k, None)
         cat_features = cat_features or []
-        train_pool = Pool(X, y, cat_features=cat_features, weight=sample_weight)
-        eval_pool = (Pool(X_val, y_val, cat_features=cat_features, weight=sample_weight_val)
-                     if X_val is not None else None)
+
+        X_cb = _prepare_cat_columns_for_catboost(X, cat_features)
+        X_val_cb = _prepare_cat_columns_for_catboost(X_val, cat_features) if X_val is not None else None
+
+        train_pool = Pool(X_cb, y, cat_features=cat_features, weight=sample_weight)
+        eval_pool = (Pool(X_val_cb, y_val, cat_features=cat_features, weight=sample_weight_val)
+                     if X_val_cb is not None else None)
         self.model_ = CatBoostRegressor(**params)
         self.model_.fit(train_pool, eval_set=eval_pool,
                         use_best_model=eval_pool is not None)
         self.best_iteration_ = self.model_.get_best_iteration() or params.get("iterations")
+        self._cat_features = cat_features
         return self
 
     def predict(self, X):
-        return self.model_.predict(X)
+        cat_features = getattr(self, "_cat_features", []) or []
+        X_cb = _prepare_cat_columns_for_catboost(X, cat_features) if cat_features else X
+        return self.model_.predict(X_cb)
 
     def feature_importance(self):
         if self.model_ is None: return None

@@ -1,11 +1,4 @@
-"""Главный регулируемый скрипт. Запускает весь пайплайн или нужные стадии.
-
-Примеры:
-    python -m scripts.run_pipeline --stage all
-    python -m scripts.run_pipeline --stage train --configs configs/lgbm.yaml configs/xgb.yaml
-    python -m scripts.run_pipeline --stage stack
-    python -m scripts.run_pipeline --stage blend
-"""
+"""Главный регулируемый скрипт. Запускает весь пайплайн или нужные стадии."""
 import argparse, sys, subprocess, glob, json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -55,11 +48,10 @@ def _latest(glob_pat):
 
 
 def _latest_report(stem):
-    """Возвращает (json_report_path, oof_path, pred_path) последних совпадающих файлов."""
     rep = _latest(f"experiments/reports/{stem}_*.json")
     if not rep:
         return None, None, None
-    ts = Path(rep).stem[len(stem) + 1:]  # после "stem_"
+    ts = Path(rep).stem[len(stem) + 1:]
     oof = f"experiments/oof/{stem}_{ts}_oof.parquet"
     pred = f"experiments/predictions/{stem}_{ts}.csv"
     if not Path(oof).exists():
@@ -69,11 +61,14 @@ def _latest_report(stem):
     return rep, oof, pred
 
 
+ENSEMBLE_STEMS = ["lgbm_l1_log", "lgbm_tweedie",
+                  "xgb_l1_log", "cat_l1_log", "ridge_log", "mlp_log"]
+BLEND_STEMS = ["lgbm_l1_log", "lgbm_tweedie", "xgb_l1_log", "cat_l1_log"]
+
+
 def stage_stack(max_mape: float = 12.0):
-    """Стекинг по последним OOF/predictions; модели с CV MAPE > max_mape исключаются."""
     oof_files, pred_files, names = [], [], []
-    for stem in ["lgbm_l1_log", "lgbm_mape_weight", "lgbm_tweedie",
-                 "xgb_l1_log", "cat_l1_log", "ridge_log", "mlp_log"]:
+    for stem in ENSEMBLE_STEMS:
         rep, oof, pred = _latest_report(stem)
         if not (rep and oof and pred):
             continue
@@ -94,11 +89,9 @@ def stage_stack(max_mape: float = 12.0):
     subprocess.run(cmd, check=True)
 
 
-def stage_blend(max_mape: float = 12.0, power: float = 4.0):
-    """Геом-бленд только моделей с разумным CV MAPE, веса по 1/MAPE^power."""
+def stage_blend(max_mape: float = 12.0, power: float = 3.0):
     candidates, weights = [], []
-    for stem in ["lgbm_l1_log", "lgbm_mape_weight", "lgbm_tweedie",
-                 "xgb_l1_log", "cat_l1_log"]:
+    for stem in BLEND_STEMS:
         rep, _, pred = _latest_report(stem)
         if not (rep and pred):
             continue
@@ -124,7 +117,6 @@ def stage_blend(max_mape: float = 12.0, power: float = 4.0):
 
 
 def stage_blend_with_stack():
-    """Финальный гипер-бленд: смешиваем stack_latest + blend_latest (gmean 50/50)."""
     p1 = Path("data/submissions/stack_latest.csv")
     p2 = Path("data/submissions/blend_latest.csv")
     if not (p1.exists() and p2.exists()):
@@ -144,12 +136,11 @@ def main():
                              "stack", "blend", "super"],
                     default="all")
     ap.add_argument("--configs", nargs="+",
-                    default=["configs/lgbm.yaml", "configs/lgbm_mape.yaml",
+                    default=["configs/lgbm.yaml",
                              "configs/lgbm_tweedie.yaml", "configs/xgb.yaml",
                              "configs/catboost.yaml"])
     ap.add_argument("--train_path", default="data/processed/v2.parquet")
-    ap.add_argument("--max_mape", type=float, default=12.0,
-                    help="Модели с CV MAPE выше — исключаются из stack/blend")
+    ap.add_argument("--max_mape", type=float, default=12.0)
     args = ap.parse_args()
 
     set_seed(2026)
