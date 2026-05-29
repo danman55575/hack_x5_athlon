@@ -473,6 +473,8 @@ def encode_categoricals_ordinal(
     for col in cat_cols:
         if col not in df.columns:
             continue
+        if col == 'locality':
+            df['locality'] += df['region']
         df[col] = df[col].astype("category")
         mappings[col] = list(df[col].cat.categories)
         # КРИТИЧНО: +1 чтобы NaN-код (-1) превратился в 0, а реальные категории — в 1..N.
@@ -486,7 +488,10 @@ def encode_categoricals_native(
 ) -> pd.DataFrame:
     """Native: оставляем pandas category dtype. Для XGBoost (enable_categorical=True),
     LightGBM (auto-detect) и CatBoost (через Pool.cat_features)."""
+    
     for col in cat_cols:
+        if col == 'locality':
+            df['locality'] += df['region']
         if col in df.columns:
             df[col] = df[col].astype("category")
     return df

@@ -167,55 +167,16 @@ def _sanity_cap(df_pred_rows: pd.DataFrame, pred: np.ndarray, logger,
     """
     pred = np.asarray(pred, dtype=np.float64).copy()
     lag1 = df_pred_rows.get("rto_lag_1", pd.Series(np.nan)).values.astype(np.float64)
-    macro = df_pred_rows.get("grp_all_yoy_macro_median",
-                              pd.Series(np.nan)).values.astype(np.float64)
-    naive_seasonal = df_pred_rows.get("rto_naive_seasonal",
-                                       pd.Series(np.nan)).values.astype(np.float64)
-    same_m_1y = df_pred_rows.get("rto_same_month_1y",
-                                  pd.Series(np.nan)).values.astype(np.float64)
-    lag1_scaled = df_pred_rows.get("rto_lag_1_scaled_by_days",
-                                    pd.Series(np.nan)).values.astype(np.float64)
 
-    store_ids = df_pred_rows.get("store_id", pd.Series(np.arange(len(pred)))).values
-
-    replaced_rows = []
     for i in range(len(pred)):
         if not np.isfinite(lag1[i]) or lag1[i] <= 0:
             continue
         ratio = pred[i] / lag1[i]
-        if ratio > up_mul or ratio < down_mul:
-            cand = []
-            if np.isfinite(macro[i]) and macro[i] > 0:
-                cand.append(lag1[i] * macro[i])
-            if np.isfinite(naive_seasonal[i]) and naive_seasonal[i] > 0:
-                cand.append(naive_seasonal[i])
-            if np.isfinite(same_m_1y[i]) and same_m_1y[i] > 0:
-                cand.append(same_m_1y[i])
-            if np.isfinite(lag1_scaled[i]) and lag1_scaled[i] > 0:
-                cand.append(lag1_scaled[i])
-            if cand:
-                old = pred[i]
-                pred[i] = float(np.median(cand))
-                replaced_rows.append({
-                    "new_id": int(store_ids[i]) if np.isfinite(store_ids[i]) else -1,
-                    "lag1": float(lag1[i]),
-                    "ratio_before": float(ratio),
-                    "pred_before": float(old),
-                    "pred_after": float(pred[i]),
-                    "ratio_after": float(pred[i] / lag1[i]),
-                    "n_candidates": len(cand),
-                })
-    n_replaced = len(replaced_rows)
-    if n_replaced > 0:
-        logger.info(f"Sanity cap [{tag}]: replaced {n_replaced} extreme predictions "
-                    f"(thresholds: up={up_mul}, down={down_mul})")
-        if dump_path is not None and n_replaced <= 5000:
-            try:
-                dump_path.parent.mkdir(parents=True, exist_ok=True)
-                pd.DataFrame(replaced_rows).to_csv(dump_path, index=False)
-                logger.info(f"Sanity-cap dump written: {dump_path}")
-            except Exception as e:
-                logger.warning(f"Sanity-cap dump failed: {e}")
+        if ratio > up_mul:
+            pred[i] = up_mul * lag1[i]
+        elif ratio < down_mul:
+            pred[i] = down_mul * lag1[i]
+
     return pred
 
 
