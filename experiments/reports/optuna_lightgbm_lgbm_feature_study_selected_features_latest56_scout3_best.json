@@ -1,0 +1,34 @@
+{
+  "model": "lightgbm",
+  "study_name": "lightgbm_lgbm_feature_study_selected_features_latest56_scout3",
+  "best_value": 4.984702144611409,
+  "best_trial": 0,
+  "best_params": {
+    "learning_rate": 0.044525281185079396,
+    "num_leaves": 145,
+    "min_data_in_leaf": 147,
+    "feature_fraction": 0.9383699019515109,
+    "bagging_fraction": 0.9874898654932726,
+    "lambda_l1": 0.01267626753405789,
+    "lambda_l2": 0.0034612023532102406,
+    "max_depth": -1
+  },
+  "feature_list_path": "experiments/reports/feature_study_selected_features.csv",
+  "config_path": "configs/lgbm.yaml",
+  "fold_mapes": [
+    5.753353157071485,
+    4.256922673678895,
+    4.704493873917094,
+    4.77840605525678
+  ],
+  "fold_iters": [
+    1338,
+    844,
+    1500,
+    1498
+  ],
+  "n_trials_total": 3,
+  "n_trials_complete": 2,
+  "n_trials_pruned": 1,
+  "timestamp": "2026-05-29T12:33:00"
+}

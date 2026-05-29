@@ -1,0 +1,28 @@
+{
+  "best_model": "xgboost",
+  "best_value": 4.5759920166768655,
+  "best_yaml_path": "experiments/reports/optuna_xgboost_xgb_mom_ratio_feature_study_selected_features_xgb_mom_weather_scout3_best_config.yaml",
+  "summary_path": "experiments/reports/optuna_model_compare_xgb_mom_weather_scout3.csv",
+  "models": [
+    {
+      "model": "xgboost",
+      "study_name": "xgboost_xgb_mom_ratio_feature_study_selected_features_xgb_mom_weather_scout3",
+      "best_value": 4.5759920166768655,
+      "best_trial": 2,
+      "config_path": "configs/xgb_mom_ratio.yaml",
+      "feature_list_path": "experiments/reports/feature_study_selected_features.csv",
+      "best_json_path": "experiments/reports/optuna_xgboost_xgb_mom_ratio_feature_study_selected_features_xgb_mom_weather_scout3_best.json",
+      "best_yaml_path": "experiments/reports/optuna_xgboost_xgb_mom_ratio_feature_study_selected_features_xgb_mom_weather_scout3_best_config.yaml",
+      "trials_csv_path": "experiments/reports/optuna_xgboost_xgb_mom_ratio_feature_study_selected_features_xgb_mom_weather_scout3_trials.csv",
+      "n_trials_total": 3,
+      "n_trials_complete": 3,
+      "n_trials_pruned": 0,
+      "fold_mapes": [
+        5.17935881553048,
+        3.799996272428823,
+        5.046304872325681,
+        4.017782198758068
+      ]
+    }
+  ]
+}

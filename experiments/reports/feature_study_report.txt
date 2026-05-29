@@ -22,31 +22,32 @@ EDA
 - полностью пустых колонок после сборки: 0
 
 Reference top-100
-- lgbm_reference_top100: mean_mape=5.7214, march_fold=4.4606
-- top_features: rto_lag_1, rto_mean_2, days_in_month_lag_1, locality, rto_seasonal_ratio_baseline, region, grp_all_lag1_mean, month_cos, rto_median_3, month_sin
+- lgbm_reference_top100: mean_mape=6.5884, march_fold=5.2047
+- top_features: rto_lag_1, rto_mean_2, days_in_month_lag_1, rto_seasonal_ratio_baseline, locality, grp_all_lag1_mean, region, month_cos, is_jan, month_sin
 
 Быстрые эксперименты
-- lgbm_best_ratio_mom_ratio: mean_mape=4.7179, march_fold=3.951417565303285, feature_count=42, dropped_by_top100=14
-- lgbm_fs3_rolling: mean_mape=5.1701, march_fold=5.252516811416367, feature_count=42, dropped_by_top100=14
-- lgbm_fs9_external_macro: mean_mape=5.1840, march_fold=5.2846655073546005, feature_count=47, dropped_by_top100=19
-- lgbm_fs4_growth: mean_mape=5.1963, march_fold=5.055915176677713, feature_count=58, dropped_by_top100=15
-- lgbm_fs2_basic_lags: mean_mape=5.2684, march_fold=5.619611353844022, feature_count=30, dropped_by_top100=14
-- lgbm_fs10_x5_public: mean_mape=5.2684, march_fold=5.619611353844022, feature_count=30, dropped_by_top100=29
-- lgbm_reference_top100: mean_mape=5.7214, march_fold=4.460560967477077, feature_count=169, dropped_by_top100=0
-- lgbm_fs6_group: mean_mape=5.7233, march_fold=4.57760277663735, feature_count=84, dropped_by_top100=38
-- lgbm_fs5_seasonality: mean_mape=5.7431, march_fold=5.137839443730541, feature_count=65, dropped_by_top100=27
-- lgbm_fs7_anomaly: mean_mape=5.8261, march_fold=4.527577542979425, feature_count=86, dropped_by_top100=42
-- lgbm_fs8_dynamic_ets: mean_mape=5.8455, march_fold=4.424856791528776, feature_count=95, dropped_by_top100=49
+- lgbm_best_ratio_mom_ratio: mean_mape=4.7429, march_fold=3.938649553480717, feature_count=75, dropped_by_top100=21
+- lgbm_fs11_weather: mean_mape=5.8487, march_fold=5.671381343254743, feature_count=75, dropped_by_top100=21
+- lgbm_fs4_growth: mean_mape=5.8739, march_fold=5.3767004144409904, feature_count=66, dropped_by_top100=7
+- lgbm_fs9_external_macro: mean_mape=5.8903, march_fold=5.673855455388557, feature_count=58, dropped_by_top100=8
+- lgbm_fs3_rolling: mean_mape=5.9251, march_fold=5.743114169678565, feature_count=49, dropped_by_top100=7
+- lgbm_fs2_basic_lags: mean_mape=6.1842, march_fold=6.32945291874949, feature_count=37, dropped_by_top100=7
+- lgbm_fs10_x5_public: mean_mape=6.1842, march_fold=6.32945291874949, feature_count=37, dropped_by_top100=7
+- lgbm_fs5_seasonality: mean_mape=6.2709, march_fold=5.515378179453865, feature_count=75, dropped_by_top100=17
 - baseline_seasonal_ratio: mean_mape=6.4278, march_fold=5.927749926502539, feature_count=0, dropped_by_top100=0
 - baseline_blend: mean_mape=6.4750, march_fold=6.882087294709377, feature_count=0, dropped_by_top100=0
-- lgbm_best_ratio_yoy_ratio: mean_mape=6.6883, march_fold=8.924557722677568, feature_count=42, dropped_by_top100=14
+- lgbm_reference_top100: mean_mape=6.5884, march_fold=5.204730980885603, feature_count=194, dropped_by_top100=0
+- lgbm_fs8_dynamic_ets: mean_mape=6.6033, march_fold=5.242068085813272, feature_count=115, dropped_by_top100=29
+- lgbm_fs6_group: mean_mape=6.6103, march_fold=5.125910320072537, feature_count=98, dropped_by_top100=24
+- lgbm_fs7_anomaly: mean_mape=6.6697, march_fold=5.176864055137016, feature_count=101, dropped_by_top100=27
+- lgbm_best_ratio_yoy_ratio: mean_mape=7.0401, march_fold=8.014842649530586, feature_count=75, dropped_by_top100=21
 - baseline_last_month: mean_mape=9.5407, march_fold=10.404175901597396, feature_count=0, dropped_by_top100=0
 - baseline_same_month_last_year: mean_mape=10.5687, march_fold=11.577361191314358, feature_count=0, dropped_by_top100=0
-- lgbm_fs1_static_te: mean_mape=16.4764, march_fold=15.931894496044247, feature_count=23, dropped_by_top100=13
+- lgbm_fs1_static_te: mean_mape=17.5595, march_fold=16.371056592127196, feature_count=29, dropped_by_top100=7
 
 Выбранный набор
-- lgbm_fs3_rolling: mean_mape=5.1701, march_fold=5.252516811416367, features=42
-- top_features: rto_lag_1, rto_mean_2, locality, days_in_month_lag_1, month_cos, is_jan, month_sin, region, households, rto_lag_12
+- lgbm_fs11_weather: mean_mape=5.8487, march_fold=5.671381343254743, features=75
+- top_features: rto_lag_1, rto_mean_2, days_in_month_lag_1, rto_median_3, is_jan, locality, month_cos, month_sin, region, households
 
 Артефакты
 - artifacts/eda/quick_experiments_mean_mape.png

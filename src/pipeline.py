@@ -27,6 +27,32 @@ EXPECTED_SUBMISSION_ROWS = 18657
 MAX_SUBMISSION_FILE_SIZE = 1_000_000  # 1 MB
 
 
+def _is_ratio_target(target_transform: str) -> bool:
+    return target_transform in {"mom_ratio", "yoy_ratio"}
+
+
+def _ratio_denominator_col(target_transform: str) -> str:
+    if target_transform == "mom_ratio":
+        return "rto_lag_1"
+    if target_transform == "yoy_ratio":
+        return "rto_lag_12"
+    raise ValueError(f"Неизвестный ratio-target: {target_transform}")
+
+
+def _compute_target_clip_bounds(values: np.ndarray, low_q: float = 0.01, high_q: float = 0.99) -> tuple[float, float] | None:
+    arr = np.asarray(values, dtype=np.float64)
+    arr = arr[np.isfinite(arr)]
+    if arr.size == 0:
+        return None
+    low = float(np.quantile(arr, low_q))
+    high = float(np.quantile(arr, high_q))
+    if not np.isfinite(low) or not np.isfinite(high):
+        return None
+    if low > high:
+        low, high = high, low
+    return low, high
+
+
 def get_model(name, params=None):
     if name not in ALL_MODELS:
         raise ValueError(f"Unknown model: {name}")
@@ -156,10 +182,30 @@ def _prepare(train_path, target_transform, winsorize_quantile, feature_groups=No
 
     if target_transform == "log1p":
         y_train_all = np.log1p(df_feat["_rto_train"].astype(np.float64))
-        inv = lambda yp: np.clip(np.expm1(yp), 1.0, None)
-    else:
+        inv = lambda yp, rows=None, clip_bounds=None: np.clip(np.expm1(yp), 1.0, None)
+    elif target_transform == "none":
         y_train_all = df_feat["_rto_train"].astype(np.float64)
-        inv = lambda yp: np.clip(yp, 1.0, None)
+        inv = lambda yp, rows=None, clip_bounds=None: np.clip(yp, 1.0, None)
+    elif _is_ratio_target(target_transform):
+        denom_col = _ratio_denominator_col(target_transform)
+        denom = df_feat[denom_col].astype(np.float64)
+        numer = df_feat["_rto_train"].astype(np.float64)
+        y_train_all = pd.Series(
+            np.where(np.isfinite(denom) & (denom > 0), numer / denom, np.nan),
+            index=df_feat.index,
+        )
+
+        def inv(yp, rows=None, clip_bounds=None):
+            if rows is None:
+                raise ValueError("Для ratio-target при обратном преобразовании нужны строки с деноминатором.")
+            pred_ratio = np.asarray(yp, dtype=np.float64)
+            if clip_bounds is not None:
+                pred_ratio = np.clip(pred_ratio, clip_bounds[0], clip_bounds[1])
+            denom_values = rows[denom_col].to_numpy(dtype=np.float64)
+            pred = denom_values * pred_ratio
+            return np.clip(pred, 1.0, None)
+    else:
+        raise ValueError(f"Неизвестный target_transform: {target_transform}")
 
     return df_feat, feat_cols, cat_features, y_train_all, inv, feature_audit
 
@@ -396,6 +442,12 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         seeds = [int(seeds)]
     seeds = list(seeds)
     logger.info(f"Seed bag in use: {seeds} ({len(seeds)} seeds)")
+    if _is_ratio_target(target_transform):
+        logger.info(
+            "Используется ratio-target: %s, деноминатор=%s",
+            target_transform,
+            _ratio_denominator_col(target_transform),
+        )
 
     final_iter_multiplier = float(config.get("final_iter_multiplier", 1.10))
 
@@ -469,18 +521,26 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         tr_idx = tr_idx[tr_mask]; va_idx = va_idx[va_mask]
 
         X_tr = df_feat.loc[tr_idx, feat_cols]
-        y_tr = y_train_all.iloc[tr_idx].values
+        y_tr = y_train_all.iloc[tr_idx].values.astype(np.float64)
         X_va = df_feat.loc[va_idx, feat_cols]
-        y_va_log = y_train_all.iloc[va_idx].values
+        y_va_target = y_train_all.iloc[va_idx].values.astype(np.float64)
         y_va_orig = df_feat.loc[va_idx, "rto"].values
 
         sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
         sw_v = None
+        clip_bounds = None
+        if _is_ratio_target(target_transform):
+            clip_bounds = _compute_target_clip_bounds(y_tr)
+            if clip_bounds is not None:
+                y_tr = np.clip(y_tr, clip_bounds[0], clip_bounds[1])
 
-        pred_log_avg, best_iters, fold_model = _train_seed_bag(
+        pred_target_avg, best_iters, fold_model = _train_seed_bag(
             config["model"], config.get("params", {}),
-            X_tr, y_tr, X_va, y_va_log, cat_features_in, sw, sw_v, seeds)
-        pred_orig = inv(pred_log_avg)
+            X_tr, y_tr, X_va, y_va_target, cat_features_in, sw, sw_v, seeds)
+        if _is_ratio_target(target_transform):
+            pred_orig = inv(pred_target_avg, rows=df_feat.loc[va_idx], clip_bounds=clip_bounds)
+        else:
+            pred_orig = inv(pred_target_avg)
 
         if apply_cap_in_cv:
             cap_dump = Path("experiments/reports") / f"{exp_name}_{ts}_sanity_cap_{fold.name}.csv"
@@ -546,9 +606,14 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         tr_mask = ~y_train_all.iloc[tr_idx].isna().values
         tr_idx = tr_idx[tr_mask]
         X_tr = df_feat.loc[tr_idx, feat_cols]
-        y_tr = y_train_all.iloc[tr_idx].values
+        y_tr = y_train_all.iloc[tr_idx].values.astype(np.float64)
         X_pr = df_feat.loc[pred_idx, feat_cols]
         sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
+        clip_bounds = None
+        if _is_ratio_target(target_transform):
+            clip_bounds = _compute_target_clip_bounds(y_tr)
+            if clip_bounds is not None:
+                y_tr = np.clip(y_tr, clip_bounds[0], clip_bounds[1])
 
         nb_final = _weighted_geom_mean_iters(trusted_fold_data, final_iter_multiplier, logger=logger)
         if nb_final is None:
@@ -557,17 +622,20 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
             nb_final = _weighted_geom_mean_iters(all_data, final_iter_multiplier, logger=logger)
             logger.warning(f"No trusted folds for iter selection; fallback nb_final={nb_final}")
 
-        pred_log_avg_pred = []
+        pred_target_avg_pred = []
         for s in seeds:
             m_params = dict(config.get("params", {}))
             m_params = _apply_num_boost_override(config["model"], m_params, nb_final)
             m = get_model(config["model"], m_params)
             m.fit(X_tr, y_tr, None, None, cat_features=cat_features_in,
                   sample_weight=sw, sample_weight_val=None, seed=s)
-            pred_log_avg_pred.append(m.predict(X_pr))
+            pred_target_avg_pred.append(m.predict(X_pr))
             last_model = m
-        pred_log_avg = np.mean(pred_log_avg_pred, axis=0)
-        pred_orig = inv(pred_log_avg)
+        pred_target_avg = np.mean(pred_target_avg_pred, axis=0)
+        if _is_ratio_target(target_transform):
+            pred_orig = inv(pred_target_avg, rows=df_feat.loc[pred_idx], clip_bounds=clip_bounds)
+        else:
+            pred_orig = inv(pred_target_avg)
 
         cap_dump = Path("experiments/reports") / f"{exp_name}_{ts}_sanity_cap_FINAL.csv"
         pred_orig = _sanity_cap(

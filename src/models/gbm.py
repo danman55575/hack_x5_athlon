@@ -1,9 +1,6 @@
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-import lightgbm as lgb
-import xgboost as xgb
-from catboost import CatBoostRegressor, Pool
 from .base import BaseModel
 
 
@@ -25,6 +22,8 @@ class LightGBMModel(BaseModel):
 
     def fit(self, X, y, X_val=None, y_val=None, cat_features=None,
             sample_weight=None, sample_weight_val=None, seed=None):
+        import lightgbm as lgb
+
         params = {**self.default_params, **self.params}
         if seed is not None:
             params["seed"] = int(seed)
@@ -82,6 +81,8 @@ class XGBoostModel(BaseModel):
 
     def fit(self, X, y, X_val=None, y_val=None, cat_features=None,
             sample_weight=None, sample_weight_val=None, seed=None):
+        import xgboost as xgb
+
         params = {**self.default_params, **self.params}
         if seed is not None:
             params["seed"] = int(seed)
@@ -114,6 +115,8 @@ class XGBoostModel(BaseModel):
         return self
 
     def predict(self, X):
+        import xgboost as xgb
+
         enable_cat = getattr(self, "_enable_categorical", False)
         d = xgb.DMatrix(X, enable_categorical=enable_cat)
         it = getattr(self.model_, "best_iteration", None)
@@ -140,6 +143,8 @@ class CatBoostModel(BaseModel):
 
     def fit(self, X, y, X_val=None, y_val=None, cat_features=None,
             sample_weight=None, sample_weight_val=None, seed=None):
+        from catboost import CatBoostRegressor, Pool
+
         params = {**self.default_params, **self.params}
         if seed is not None:
             params["random_seed"] = int(seed)

@@ -14,6 +14,23 @@ import pandas as pd
 from .utils import *
 
 
+WEATHER_OBS_COLS = [
+    "wx_temp_mean_obs",
+    "wx_temp_max_obs",
+    "wx_temp_min_obs",
+    "wx_precip_sum_obs",
+    "wx_rain_sum_obs",
+    "wx_snowfall_sum_obs",
+    "wx_precip_hours_obs",
+    "wx_wind_speed_mean_obs",
+    "wx_freeze_days_obs",
+    "wx_rain_days_obs",
+    "wx_snow_days_obs",
+    "wx_hdd_obs",
+    "wx_cdd_obs",
+]
+
+
 def add_region_spendings(
     df: pd.DataFrame,
     spendings_file: str = "data/processed/region_spendings.csv",
@@ -108,6 +125,111 @@ def add_external_macro_features(
         "region_spendings_lag1_to_rmean3",
     ]
     return df.merge(region_panel[macro_cols], on=["year", "month", "region"], how="left")
+
+
+def add_weather_features(
+    df: pd.DataFrame,
+    locality_weather_file: str = "data/processed/weather_monthly_locality.parquet",
+    region_weather_file: str = "data/processed/weather_monthly_region.parquet",
+) -> pd.DataFrame:
+    """Добавляет погодные признаки без утечки из будущего.
+
+    Используются только наблюдения прошлых месяцев через `shift(1)` и более дальние лаги.
+    Если доступен локальный погодный файл по населённым пунктам, он имеет приоритет.
+    Иначе используется более грубый файл по регионам.
+    """
+    locality_path = Path(locality_weather_file)
+    region_path = Path(region_weather_file)
+    if locality_path.exists():
+        weather_path = locality_path
+        geo_keys = ["locality", "region"]
+    elif region_path.exists():
+        weather_path = region_path
+        geo_keys = ["region"]
+    else:
+        return df
+
+    weather = pd.read_parquet(weather_path)
+    available_obs_cols = [col for col in WEATHER_OBS_COLS if col in weather.columns]
+    if not available_obs_cols:
+        return df
+
+    merge_cols = geo_keys + ["year", "month"] + available_obs_cols
+    merged = df.merge(weather[merge_cols], on=geo_keys + ["year", "month"], how="left")
+    merged = merged.sort_values(["store_id", "t"]).reset_index(drop=True)
+
+    grouped = merged.groupby(geo_keys, dropna=False)
+
+    lag_plan = {
+        "wx_temp_mean_obs": (1, 2, 12),
+        "wx_temp_max_obs": (1, 12),
+        "wx_temp_min_obs": (1, 12),
+        "wx_precip_sum_obs": (1, 2, 12),
+        "wx_rain_sum_obs": (1, 12),
+        "wx_snowfall_sum_obs": (1, 12),
+        "wx_precip_hours_obs": (1, 12),
+        "wx_wind_speed_mean_obs": (1, 12),
+        "wx_freeze_days_obs": (1, 12),
+        "wx_rain_days_obs": (1, 12),
+        "wx_snow_days_obs": (1, 12),
+        "wx_hdd_obs": (1, 2, 12),
+        "wx_cdd_obs": (1, 12),
+    }
+    roll_plan = {
+        "wx_temp_mean_obs": (3,),
+        "wx_precip_sum_obs": (3,),
+        "wx_snowfall_sum_obs": (3,),
+        "wx_hdd_obs": (3,),
+    }
+
+    created: dict[str, pd.Series] = {}
+    shifted_cache: dict[str, pd.Series] = {}
+    for col, lags in lag_plan.items():
+        if col not in merged.columns:
+            continue
+        for lag in lags:
+            created[col.replace("_obs", f"_lag_{lag}")] = grouped[col].shift(lag)
+        shifted_cache[col] = grouped[col].shift(1)
+
+    for col, windows in roll_plan.items():
+        shifted = shifted_cache.get(col)
+        if shifted is None:
+            continue
+        for window in windows:
+            created[col.replace("_obs", f"_rmean_{window}")] = (
+                shifted.groupby([merged[key] for key in geo_keys], dropna=False)
+                .rolling(window=window, min_periods=1)
+                .mean()
+                .reset_index(level=list(range(len(geo_keys))), drop=True)
+            )
+
+    if {"wx_temp_mean_obs", "wx_hdd_obs", "wx_precip_sum_obs", "wx_snowfall_sum_obs"}.issubset(set(available_obs_cols)):
+        created["wx_temp_mean_anom_lag1"] = (
+            created["wx_temp_mean_lag_1"] - created["wx_temp_mean_lag_12"]
+        )
+        created["wx_hdd_anom_lag1"] = created["wx_hdd_lag_1"] - created["wx_hdd_lag_12"]
+        created["wx_precip_ratio_lag1_lag12"] = safe_divide(
+            created["wx_precip_sum_lag_1"],
+            created["wx_precip_sum_lag_12"],
+        )
+        created["wx_snow_ratio_lag1_lag12"] = safe_divide(
+            created["wx_snowfall_sum_lag_1"],
+            created["wx_snowfall_sum_lag_12"],
+        )
+
+    if {"wx_temp_mean_lag_1", "wx_temp_mean_lag_2"}.issubset(created):
+        created["wx_temp_mean_diff_1"] = created["wx_temp_mean_lag_1"] - created["wx_temp_mean_lag_2"]
+    if {"wx_hdd_lag_1", "wx_hdd_lag_2"}.issubset(created):
+        created["wx_hdd_diff_1"] = created["wx_hdd_lag_1"] - created["wx_hdd_lag_2"]
+    if {"wx_precip_sum_lag_1", "wx_precip_sum_lag_2"}.issubset(created):
+        created["wx_precip_ratio_lag1_lag2"] = safe_divide(
+            created["wx_precip_sum_lag_1"],
+            created["wx_precip_sum_lag_2"],
+        )
+
+    if created:
+        merged = with_columns(merged, created)
+    return merged
 
 
 def add_lag_features(
@@ -485,6 +607,7 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
     """Разбивает список фичей на логические группы для абляций."""
     groups = {
         "external_macro": [],
+        "weather": [],
         "ets": [],
         "target_encoding": [],
         "static_calendar": [],
@@ -622,6 +745,7 @@ def audit_feature_frame(df: pd.DataFrame, feature_cols: list[str]) -> dict[str, 
 def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame, list[str], list[str]]:
     df = df.sort_values(["store_id", "t"]).copy().reset_index(drop=True)
     df = add_external_macro_features(df)
+    df = add_weather_features(df)
     df = add_lag_features(df, target=target)
     df = add_rolling_features(df, target=target)
     df = add_diff_features(df, target=target)
@@ -639,7 +763,7 @@ def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame,
     df, _ = encode_categoricals_ordinal(df)
     df = downcast(df)
 
-    drop_cols = {target, "store_id", "year", "t", "month"} | set(DYNAMIC_COLS)
+    drop_cols = {target, "store_id", "year", "t", "month"} | set(DYNAMIC_COLS) | set(WEATHER_OBS_COLS)
     feature_cols = [col for col in df.columns if col not in drop_cols]
     cat_features = [col for col in CAT_COLS if col in feature_cols]
     return df, feature_cols, cat_features
@@ -719,6 +843,7 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
     groups = {
         "x5_public": [],
         "external_macro": [],
+        "weather": [],
         "ets": [],
         "target_encoding": [],
         "static_calendar": [],
@@ -788,6 +913,8 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
     for col in feature_cols:
         if col.startswith("x5pub_"):
             groups["x5_public"].append(col)
+        elif col.startswith("wx_"):
+            groups["weather"].append(col)
         elif col.startswith(EXTERNAL_MACRO_PREFIXES):
             groups["external_macro"].append(col)
         elif col.startswith("ets_"):
@@ -823,6 +950,7 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
 def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame, list[str], list[str]]:
     df = df.sort_values(["store_id", "t"]).copy().reset_index(drop=True)
     df = add_external_macro_features(df)
+    df = add_weather_features(df)
     df = add_lag_features(df, target=target)
     df = add_rolling_features(df, target=target)
     df = add_diff_features(df, target=target)
@@ -841,7 +969,7 @@ def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame,
     df, _ = encode_categoricals_ordinal(df)
     df = downcast(df)
 
-    drop_cols = {target, "store_id", "year", "t", "month"} | set(DYNAMIC_COLS)
+    drop_cols = {target, "store_id", "year", "t", "month"} | set(DYNAMIC_COLS) | set(WEATHER_OBS_COLS)
     feature_cols = [col for col in df.columns if col not in drop_cols]
     cat_features = [col for col in CAT_COLS if col in feature_cols]
     return df, feature_cols, cat_features

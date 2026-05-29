@@ -1,0 +1,55 @@
+name: xgb_l1_mom_ratio_feature_study_selected_features_feature_study_selected_features
+model: xgboost
+seed: 2026
+target_transform: mom_ratio
+n_trials: 80
+mape_weights: false
+use_cat: true
+save_oof: true
+feature_allowlist_path: experiments/reports/feature_study_selected_features.csv
+cv_val_months:
+- - 2025
+  - 2
+- - 2024
+  - 12
+- - 2024
+  - 9
+- - 2024
+  - 3
+cv_fold_weights:
+- 3.0
+- 1.5
+- 1.0
+- 2.0
+fold_iter_use_weights_gt: 0.5
+final_iter_multiplier: 1.1
+seed_bag:
+- 2026
+- 41
+- 777
+winsorize_quantile: 0.999
+sanity_cap_up: 2.0
+sanity_cap_down: 0.5
+apply_sanity_cap_in_cv: true
+params:
+  objective: reg:absoluteerror
+  eval_metric: mae
+  learning_rate: 0.03818900845492669
+  max_depth: 9
+  min_child_weight: 3.5182537461872005
+  subsample: 0.7589203973944937
+  colsample_bytree: 0.7183869258761691
+  reg_lambda: 5.490220039083707
+  reg_alpha: 0.00018004359021025256
+  tree_method: hist
+  nthread: 4
+  num_boost_round: 12000
+  early_stopping_rounds: 300
+  gamma: 0.012341260037507362
+optuna_meta:
+  study_name: xgboost_xgb_mom_ratio_feature_study_selected_features_xgb_mom_weather_scout3
+  best_value: 4.5759920166768655
+  best_trial: 2
+  feature_list_path: experiments/reports/feature_study_selected_features.csv
+  config_path: configs/xgb_mom_ratio.yaml
+  timestamp: '2026-05-29T23:58:28'

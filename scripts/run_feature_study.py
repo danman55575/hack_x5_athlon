@@ -781,6 +781,17 @@ def _build_experiments() -> list[tuple[str, list[str], str]]:
             ],
             "Добавлены квартальные публичные X5-фичи с as-of привязкой к последнему закрытому кварталу.",
         ),
+        (
+            "lgbm_fs11_weather",
+            [
+                "static_calendar",
+                "target_encoding",
+                "basic_lags",
+                "rolling",
+                "weather",
+            ],
+            "Р”РѕР±Р°РІР»РµРЅС‹ weather-Р»Р°РіРё Рё weather-rolling РїСЂРёР·РЅР°РєРё Р±РµР· СѓС‚РµС‡РєРё РёР· Р±СѓРґСѓС‰РµРіРѕ.",
+        ),
     ]
 
 
@@ -940,6 +951,7 @@ def main() -> None:
         "anomaly_residual",
         "dynamic_covariates",
         "external_macro",
+        "weather",
         "ets",
     ]
 

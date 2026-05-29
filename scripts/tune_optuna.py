@@ -32,7 +32,14 @@ from optuna.trial import TrialState
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.pipeline import _maybe_weights, _prepare, get_model, _resolve_feature_allowlist
+from src.pipeline import (
+    _compute_target_clip_bounds,
+    _is_ratio_target,
+    _maybe_weights,
+    _prepare,
+    _resolve_feature_allowlist,
+    get_model,
+)
 from src.utils.io import load_yaml, save_json
 from src.utils.logging import get_logger
 from src.utils.seed import set_seed
@@ -59,6 +66,7 @@ class ModelTuneContext:
     feat_cols: list[str]
     cat_features: list[str]
     y_train_all: pd.Series
+    inv: Any
     folds: list
     fold_weights: list[float]
 
@@ -94,7 +102,7 @@ def _load_tuning_context(
 ) -> ModelTuneContext:
     cfg = load_yaml(config_path)
     allowlist = _resolve_feature_allowlist(feature_allowlist_path=feature_allowlist_path)
-    df_feat, feat_cols, cat_features, y_train_all, _, audit = _prepare(
+    df_feat, feat_cols, cat_features, y_train_all, inv, audit = _prepare(
         train_path,
         target_transform=cfg.get("target_transform", "log1p"),
         winsorize_quantile=float(cfg.get("winsorize_quantile", 0.999)),
@@ -121,6 +129,7 @@ def _load_tuning_context(
         feat_cols=feat_cols,
         cat_features=cat_features,
         y_train_all=y_train_all,
+        inv=inv,
         folds=folds,
         fold_weights=fold_weights,
     )
@@ -295,9 +304,14 @@ def _evaluate_trial(
 
         X_tr = ctx.df_feat.loc[tr_idx, ctx.feat_cols]
         X_va = ctx.df_feat.loc[va_idx, ctx.feat_cols]
-        y_tr = ctx.y_train_all.iloc[tr_idx].values
-        y_va = ctx.y_train_all.iloc[va_idx].values
+        y_tr = ctx.y_train_all.iloc[tr_idx].values.astype(np.float64)
+        y_va = ctx.y_train_all.iloc[va_idx].values.astype(np.float64)
         sw = _maybe_weights(bool(ctx.config.get("mape_weights", False)), ctx.df_feat.loc[tr_idx, "rto"].values)
+        clip_bounds = None
+        if _is_ratio_target(target_transform):
+            clip_bounds = _compute_target_clip_bounds(y_tr)
+            if clip_bounds is not None:
+                y_tr = np.clip(y_tr, clip_bounds[0], clip_bounds[1])
 
         model = get_model(ctx.model_name, dict(params))
         model.fit(
@@ -313,6 +327,8 @@ def _evaluate_trial(
         pred = model.predict(X_va)
         if target_transform == "log1p":
             pred = np.clip(np.expm1(pred), 1.0, None)
+        elif _is_ratio_target(target_transform):
+            pred = ctx.inv(pred, rows=ctx.df_feat.loc[va_idx], clip_bounds=clip_bounds)
         else:
             pred = np.clip(pred, 1.0, None)
 
@@ -551,6 +567,11 @@ def _parse_args() -> argparse.Namespace:
         default=["lightgbm", "xgboost", "catboost"],
         help="Какие модели тюнить и сравнивать.",
     )
+    parser.add_argument(
+        "--config-path",
+        default=None,
+        help="Кастомный YAML-конфиг для тюнинга одной модели. Если задан, model берётся из самого YAML.",
+    )
     parser.add_argument("--train", default="data/processed/v2.parquet")
     parser.add_argument(
         "--feature-list-path",
@@ -583,6 +604,25 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _resolve_run_targets(args: argparse.Namespace) -> list[tuple[str, Path]]:
+    if args.config_path:
+        config_path = Path(args.config_path)
+        if not config_path.exists():
+            raise FileNotFoundError(f"Не найден config-path: {config_path}")
+        cfg = load_yaml(config_path)
+        model_name = str(cfg.get("model", "")).strip().lower()
+        if model_name not in DEFAULT_CONFIG_MAP:
+            raise ValueError(
+                f"В config-path должен быть model из {list(DEFAULT_CONFIG_MAP)}, "
+                f"получено: {cfg.get('model')}"
+            )
+        if args.models != ["lightgbm", "xgboost", "catboost"]:
+            print("Использую model из --config-path, аргумент --models будет проигнорирован.")
+        return [(model_name, config_path)]
+
+    return [(model_name, DEFAULT_CONFIG_MAP[model_name]) for model_name in args.models]
+
+
 def main() -> None:
     args = _parse_args()
     _ensure_dirs()
@@ -592,8 +632,7 @@ def main() -> None:
 
     set_seed(int(args.seed))
     results: list[dict[str, Any]] = []
-    for model_name in args.models:
-        config_path = DEFAULT_CONFIG_MAP[model_name]
+    for model_name, config_path in _resolve_run_targets(args):
         results.append(_run_study_for_model(model_name, config_path, args))
 
     summary = pd.DataFrame(results).sort_values("best_value", ascending=True).reset_index(drop=True)
