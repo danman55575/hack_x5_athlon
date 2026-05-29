@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from .utils import RENAME_MAP, BASE_YEAR  # noqa: F401
+from .utils import RENAME_MAP, BASE_YEAR, days_in_month_vec, DYNAMIC_COLS  # noqa: F401
 
 
 
@@ -22,6 +22,25 @@ def clean_outliers(df: pd.DataFrame) -> pd.DataFrame:
         df[f"{col}_clipped"] = df[col].clip(upper=q).astype(np.float32)
     
     df.drop(columns=columns, inplace=True)
+    return df
+
+
+def normalize_by_days_in_month(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize all numerical columns (DYNAMIC_COLS and rto) by days_in_month."""
+    df = df.copy()
+    
+    # Compute days_in_month
+    days_in_month = days_in_month_vec(df["year"].values, df["month"].values).astype(np.float32)
+    
+    # Normalize DYNAMIC_COLS (promo_per_check, items_per_check, cancellations)
+    for col in DYNAMIC_COLS:
+        if col in df.columns:
+            df[col] = (df[col] / days_in_month).astype(np.float32)
+    
+    # Normalize rto
+    if "rto" in df.columns:
+        df["rto"] = (df["rto"] / days_in_month).astype(np.float32)
+    
     return df
 
 
@@ -88,6 +107,7 @@ def main():
     df = adjust_rto_for_inflation(df)
     df = correct_population(df)
     df = clean_outliers(df)
+    df = normalize_by_days_in_month(df)
 
     Path(args.out_path).parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(args.out_path, index=False)

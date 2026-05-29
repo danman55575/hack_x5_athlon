@@ -133,6 +133,18 @@ CCI = {
     (2025, 1): -11
 }
 
+avg_ticket = {
+    (2023, 1): 465.4,
+    (2023, 2): 442.7,
+    (2023, 3): 440.1,
+    (2023, 4): 497.8,
+    (2024, 1): 517.6,
+    (2024, 2): 494.2,
+    (2024, 3): 488.0,
+    (2024, 4): 576.8,
+    (2025, 1): 561.7, 
+}
+
 
 def is_leap_year(year: int) -> bool:
     return (year % 4 == 0) and (year % 100 != 0 or year % 400 == 0)
@@ -202,82 +214,99 @@ def add_prev_year_group_mean(
     return df.merge(agg, on=group_cols + ["year", "month"], how="left")
 
 
-def compute_historical_march_feb_ratio(
+def compute_historical_prev_month_ratio(
     df: pd.DataFrame,
     target: str,
     group_cols: list[str],
     prefix: str,
 ) -> pd.DataFrame:
-    month_slice = df[df["month"].isin([2, 3])].copy()
-    if month_slice.empty:
-        df[f"{prefix}_march_feb_ratio"] = np.nan
-        df[f"{prefix}_march_feb_ratio_hist_pairs"] = 0
+    """Computes historical ratio of current month to previous month for each group.
+    
+    For each (group, month), computes the median ratio of month_t to month_t-1 across stores.
+    Fills NaN ratios for forecast months with group's historical medians.
+    Memory-optimized: only keeps necessary columns during computation.
+    """
+    if df.empty:
+        df = df.copy()
+        df[f"{prefix}_month_prev_ratio"] = np.nan
         return df
 
-    value_agg = (
-        month_slice.groupby(group_cols + ["year", "month"], dropna=False)[target]
-        .mean()
-        .reset_index(name="group_target")
-    )
-    count_agg = (
-        month_slice.groupby(group_cols + ["year", "month"], dropna=False)
-        .size()
-        .reset_index(name="group_count")
-    )
-
-    value_pivot = value_agg.pivot_table(
-        index=group_cols + ["year"],
-        columns="month",
-        values="group_target",
-        observed=False,
-    ).reset_index()
-    count_pivot = count_agg.pivot_table(
-        index=group_cols + ["year"],
-        columns="month",
-        values="group_count",
-        observed=False,
-    ).reset_index()
-    value_pivot = value_pivot.rename(columns={2: "feb_value", 3: "mar_value"})
-    count_pivot = count_pivot.rename(columns={2: "feb_count", 3: "mar_count"})
-
-    ratio_df = value_pivot.merge(count_pivot, on=group_cols + ["year"], how="left")
-    ratio_df = ratio_df.dropna(subset=["feb_value", "mar_value"])
-    ratio_df[f"{prefix}_march_feb_ratio"] = safe_divide(
-        ratio_df["mar_value"],
-        ratio_df["feb_value"],
-    )
-    ratio_df[f"{prefix}_march_feb_ratio_pair_count"] = ratio_df[
-        ["feb_count", "mar_count"]
-    ].min(axis=1).fillna(0)
-    ratio_df = ratio_df.sort_values(group_cols + ["year"] if group_cols else ["year"]).reset_index(drop=True)
-
-    ratio_col = f"{prefix}_march_feb_ratio"
-    pairs_col = f"{prefix}_march_feb_ratio_hist_pairs"
-    pair_count_col = f"{prefix}_march_feb_ratio_pair_count"
-
+    # Work only with necessary columns to reduce memory footprint
+    necessary_cols = ["store_id", "year", "month", target] + group_cols
+    necessary_cols = [c for c in necessary_cols if c in df.columns]
+    df_work = df[necessary_cols].sort_values(["store_id"] + group_cols + ["year", "month"])
+    
+    # Compute lagged value (previous month for each store)
     if group_cols:
-        ratio_df[ratio_col] = expanding_mean_shifted(
-            ratio_df[ratio_col],
-            ratio_df[group_cols].astype(str).agg("||".join, axis=1),
-        )
-        ratio_df[pairs_col] = (
-            ratio_df[pair_count_col]
-            .groupby(ratio_df[group_cols].astype(str).agg("||".join, axis=1))
-            .expanding()
-            .sum()
-            .shift(1)
-            .reset_index(level=0, drop=True)
-        ).fillna(0)
+        prev_month_value = df_work.groupby(["store_id"] + group_cols, dropna=False)[target].shift(1)
     else:
-        ratio_df[ratio_col] = ratio_df[ratio_col].expanding().mean().shift(1)
-        ratio_df[pairs_col] = ratio_df[pair_count_col].expanding().sum().shift(1).fillna(0)
+        prev_month_value = df_work.groupby("store_id", dropna=False)[target].shift(1)
+    
+    # Compute month-to-month ratio
+    month_ratio = safe_divide(df_work[target], prev_month_value)
+    
+    # Find valid ratios without creating a full copy - use boolean indexing
+    valid_mask = (
+        (df_work[target].notna()) & 
+        (prev_month_value.notna()) & 
+        (month_ratio.notna())
+    )
+    
+    # Extract only valid rows with minimal copying
+    if valid_mask.any():
+        idx_valid = df_work.index[valid_mask]
+        valid_month = df_work.loc[idx_valid, "month"].values
+        valid_ratio = month_ratio.loc[idx_valid].values
+        
+        # Build data for aggregation
+        agg_data = {"month": valid_month, "month_ratio": valid_ratio}
+        if group_cols:
+            for col in group_cols:
+                agg_data[col] = df_work.loc[idx_valid, col].values
+        
+        valid_df = pd.DataFrame(agg_data)
+        
+        # Compute median ratios
+        if group_cols:
+            median_ratios = valid_df.groupby(group_cols + ["month"], dropna=False)["month_ratio"].median().reset_index()
+        else:
+            median_ratios = valid_df.groupby("month", dropna=False)["month_ratio"].median().reset_index()
+        
+        median_ratios = median_ratios.rename(columns={"month_ratio": f"{prefix}_month_prev_ratio"})
+    else:
+        # No valid ratios found
+        if group_cols:
+            median_ratios = pd.DataFrame(columns=group_cols + ["month", f"{prefix}_month_prev_ratio"])
+        else:
+            median_ratios = pd.DataFrame(columns=["month", f"{prefix}_month_prev_ratio"])
+    
+    # Merge back to main dataframe
+    merge_cols = (group_cols + ["month"]) if group_cols else ["month"]
+    result = df.merge(median_ratios, on=merge_cols, how="left")
+    
+    # Fill any remaining NaNs with the group's overall median (fallback)
+    ratio_col = f"{prefix}_month_prev_ratio"
+    if group_cols:
+        # Create group keys efficiently without string conversion
+        group_tuples = df[group_cols].drop_duplicates().itertuples(index=False, name=None)
+        for group_values in group_tuples:
+            mask = pd.Series(True, index=result.index)
+            for col, val in zip(group_cols, group_values if isinstance(group_values, tuple) else (group_values,)):
+                mask = mask & (result[col] == val)
+            
+            ratio_values = result.loc[mask, ratio_col]
+            if ratio_values.notna().any():
+                median_ratio = ratio_values.median()
+                result.loc[mask & result[ratio_col].isna(), ratio_col] = median_ratio
+    else:
+        # For global: use overall median
+        ratio_values = result[ratio_col]
+        if ratio_values.notna().any():
+            median_ratio = ratio_values.median()
+            result.loc[result[ratio_col].isna(), ratio_col] = median_ratio
+    
+    return result
 
-    merge_cols = group_cols + ["year"]
-    keep_cols = merge_cols + [ratio_col, pairs_col]
-    df = df.merge(ratio_df[keep_cols], on=merge_cols, how="left")
-    df[ratio_col] = np.where(df["month"] == 3, df[ratio_col], np.nan)
-    df[pairs_col] = np.where(df["month"] == 3, df[pairs_col], 0)
-    return df
 
 
 def audit_feature_frame(df: pd.DataFrame, feature_cols: list[str]) -> dict[str, object]:

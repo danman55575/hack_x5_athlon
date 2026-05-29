@@ -56,6 +56,23 @@ def _prepare(train_path, target_transform, winsorize_quantile, feature_groups=No
     df_feat = df_feat.copy()
     feature_audit = audit_feature_frame(df_feat, feat_cols)
 
+    # Display March 2025 features for the first store
+    march_2025_df = df_feat[(df_feat["year"] == 2025) & (df_feat["month"] == 3)].copy()
+    if len(march_2025_df) > 0:
+        first_store_id = df_feat["store_id"].min()
+        first_store_march = march_2025_df[march_2025_df["store_id"] == first_store_id]
+        if len(first_store_march) > 0:
+            row = first_store_march.iloc[0]
+            print("\n" + "="*80)
+            print(f"March 2025 Features for Store ID: {first_store_id}")
+            print("="*80)
+            for feat in feat_cols:
+                if feat in row.index:
+                    value = row[feat]
+                    print(f"{feat}: {value}")
+            print("="*80)
+            
+
     cap = df_feat["rto"].quantile(winsorize_quantile)
     df_feat["_rto_train"] = df_feat["rto"].clip(upper=cap)
 
@@ -371,8 +388,16 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         X_va = df_feat.loc[va_idx, feat_cols]
         y_va_log = y_train_all.iloc[va_idx].values
         y_va_orig = df_feat.loc[va_idx, "rto"].values
+        
+        # Normalize validation target by days_in_month (for MAPE metric consistency)
+        if "days_in_month" in df_feat.columns:
+            y_va_orig = y_va_orig / df_feat.loc[va_idx, "days_in_month"].astype(np.float32).values
 
-        sw = _maybe_weights(use_mape_weights, df_feat.loc[tr_idx, "rto"].values)
+        # Compute sample weights (also normalized)
+        tr_rto = df_feat.loc[tr_idx, "rto"].values
+        if "days_in_month" in df_feat.columns:
+            tr_rto = tr_rto / df_feat.loc[tr_idx, "days_in_month"].astype(np.float32).values
+        sw = _maybe_weights(use_mape_weights, tr_rto)
         sw_v = None
 
         pred_log_avg, best_iters, fold_model = _train_seed_bag(
@@ -473,6 +498,10 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
             up_mul=sanity_up, down_mul=sanity_down,
             dump_path=cap_dump, tag="FINAL",
         )
+
+        # Denormalize predictions: multiply by days_in_month to convert from per-day back to per-month
+        days_in_month = df_feat.loc[pred_idx, "days_in_month"].values.astype(np.float32)
+        pred_orig = pred_orig * days_in_month
 
         submission = pd.DataFrame({
             "new_id": df_feat.loc[pred_idx, "store_id"].values.astype(int),

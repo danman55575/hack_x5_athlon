@@ -1,22 +1,24 @@
 ==============================================================================================================
-  HACKATHON RTO — EXPERIMENT REPORT — generated at 2026-05-26 19:41:33
+  HACKATHON RTO — EXPERIMENT REPORT — generated at 2026-05-29 22:45:03
 ==============================================================================================================
-  Total experiments: 12
+  Total experiments: 14
 
 Rank  Name                                Model           CV MAPE   CV Score  Feats   Time(s)
 --------------------------------------------------------------------------------------------------------------
 1     lgbm_l1_log                         lightgbm         0.6681     98.669    294    2564.7
-2     lgbm_l1_log                         lightgbm         4.8804     90.482    196    1671.2
-3     lgbm_l1_log                         lightgbm         4.9439     90.362    197    3314.7
-4     lgbm_l1_log                         lightgbm         4.9541     90.345    293    3396.3
-5     lgbm_l1_log                         lightgbm         4.9803     90.293    202     982.0
-6     lgbm_l1_log                         lightgbm         4.9964     90.262    196    4016.1
-7     lgbm_l1_log                         lightgbm         5.0202     90.218    196    2538.1
-8     lgbm_l1_log                         lightgbm         5.0356     90.189    189    2626.0
-9     xgb_l1_log                          xgboost          5.0510     90.154    189    2319.7
-10    ridge_log                           linear           9.5971     81.768    206     285.1
-11    ridge_log                           linear          29.0446     58.149    124     222.2
-12    ridge_log                           linear          29.0732     58.098    124     277.3
+2     lgbm_l1_log                         lightgbm         4.4796     91.248    215    3547.4
+3     lgbm_l1_log                         lightgbm         4.8804     90.482    196    1671.2
+4     lgbm_l1_log                         lightgbm         4.9439     90.362    197    3314.7
+5     lgbm_l1_log                         lightgbm         4.9541     90.345    293    3396.3
+6     lgbm_l1_log                         lightgbm         4.9803     90.293    202     982.0
+7     lgbm_l1_log                         lightgbm         4.9964     90.262    196    4016.1
+8     lgbm_l1_log                         lightgbm         5.0150     90.228    229    2274.9
+9     lgbm_l1_log                         lightgbm         5.0202     90.218    196    2538.1
+10    lgbm_l1_log                         lightgbm         5.0356     90.189    189    2626.0
+11    xgb_l1_log                          xgboost          5.0510     90.154    189    2319.7
+12    ridge_log                           linear           9.5971     81.768    206     285.1
+13    ridge_log                           linear          29.0446     58.149    124     222.2
+14    ridge_log                           linear          29.0732     58.098    124     277.3
 
 ==============================================================================================================
   PER-FOLD DETAILS
@@ -31,6 +33,16 @@ Rank  Name                                Model           CV MAPE   CV Score  Fe
     fold 2024-09  MAPE=0.5416 score=98.920 n_train=373140 n_val=18657
     fold 2024-03  MAPE=0.7378 score=98.530 n_train=261198 n_val=18657
   submission: experiments\predictions\lgbm_l1_log_20260525_135020.csv
+
+[lgbm_l1_log] model=lightgbm ts=20260529_215015
+  params: {"learning_rate": 0.044525281185079396, "num_leaves": 145, "min_data_in_leaf": 147, "feature_fraction": 0.9383699019515109, "bagging_fraction": 0.9874898654932726, "lambda_l1": 0.01267626753405789, "lambda_l2": 0.0034612023532102406, "max_depth": 0, "objective": "regression_l1", "metric": "mae", "bagging_freq": 1, "num_boost_round": 12000, "early_stopping_rounds": 300, "num_threads": 4, "verbose": -1}
+  CV mean MAPE: 4.4796  |  Score: 91.248
+  ★ Rank: #10 overall
+    fold 2025-02  MAPE=5.3418 score=89.602 n_train=466425 n_val=18657
+    fold 2024-12  MAPE=3.4905 score=93.141 n_train=429111 n_val=18657
+    fold 2024-09  MAPE=4.2648 score=91.652 n_train=373140 n_val=18657
+    fold 2024-03  MAPE=4.5809 score=91.048 n_train=261198 n_val=18657
+  submission: experiments\predictions\lgbm_l1_log_20260529_215015.csv
 
 [lgbm_l1_log] model=lightgbm ts=20260525_183742
   params: {"objective": "regression_l1", "metric": "mae", "learning_rate": 0.03, "num_leaves": 95, "min_data_in_leaf": 80, "feature_fraction": 0.8, "bagging_fraction": 0.85, "bagging_freq": 1, "lambda_l1": 0.1, "lambda_l2": 1.5, "num_boost_round": 12000, "early_stopping_rounds": 300, "num_threads": 4, "verbose": -1}
@@ -81,6 +93,16 @@ Rank  Name                                Model           CV MAPE   CV Score  Fe
     fold 2024-09  MAPE=5.1695 score=89.928 n_train=373140 n_val=18657
     fold 2024-03  MAPE=6.1538 score=88.071 n_train=261198 n_val=18657
   submission: experiments\predictions\lgbm_l1_log_20260525_172123.csv
+
+[lgbm_l1_log] model=lightgbm ts=20260529_204659
+  params: {"learning_rate": 0.044525281185079396, "num_leaves": 145, "min_data_in_leaf": 147, "feature_fraction": 0.9383699019515109, "bagging_fraction": 0.9874898654932726, "lambda_l1": 0.01267626753405789, "lambda_l2": 0.0034612023532102406, "max_depth": 0, "objective": "regression_l1", "metric": "mae", "bagging_freq": 1, "num_boost_round": 12000, "early_stopping_rounds": 300, "num_threads": 4, "verbose": -1}
+  CV mean MAPE: 5.0150  |  Score: 90.228
+  ★ Rank: #10 overall
+    fold 2025-02  MAPE=5.3519 score=89.583 n_train=466425 n_val=18657
+    fold 2024-12  MAPE=3.9913 score=92.177 n_train=429111 n_val=18657
+    fold 2024-09  MAPE=5.3301 score=89.624 n_train=373140 n_val=18657
+    fold 2024-03  MAPE=6.2483 score=87.894 n_train=261198 n_val=18657
+  submission: experiments\predictions\lgbm_l1_log_20260529_204659.csv
 
 [lgbm_l1_log] model=lightgbm ts=20260525_191630
   params: {"learning_rate": 0.044525281185079396, "num_leaves": 145, "min_data_in_leaf": 147, "feature_fraction": 0.9383699019515109, "bagging_fraction": 0.9874898654932726, "lambda_l1": 0.01267626753405789, "lambda_l2": 0.0034612023532102406, "max_depth": 0, "objective": "regression_l1", "metric": "mae", "bagging_freq": 1, "num_boost_round": 12000, "early_stopping_rounds": 300, "num_threads": 4, "verbose": -1}

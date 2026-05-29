@@ -14,28 +14,13 @@ import pandas as pd
 from .utils import *
 
 
-def add_region_spendings(
-    df: pd.DataFrame,
-    spendings_file: str = "data/processed/region_spendings.csv",
-) -> pd.DataFrame:
-    """Добавляет региональные расходы в ценах марта 2025 года."""
-    spendings_df = pd.read_csv(spendings_file)
-    return df.merge(
-        spendings_df[["year", "month", "region", "region_spendings_inflated"]],
-        on=["year", "month", "region"],
-        how="left",
-    )
-
-
 def add_external_macro_features(
     df: pd.DataFrame,
     spendings_file: str = "data/processed/region_spendings.csv",
 ) -> pd.DataFrame:
-    """Adds external macro features from inflation and regional spendings tables.
+    """Adds external macro features from regional spendings tables.
 
-    The features are designed to remain available for the forecast month even when
-    current-month spendings are absent: lagged and rolling statistics are computed
-    on a full `(region, year, month)` panel derived from the modeling frame.
+       Region spendings are calculated per quarter.
     """
     df = df.copy()
 
@@ -59,19 +44,10 @@ def add_external_macro_features(
     )
 
     region_g = region_panel.groupby("region")["region_spendings_inflated"]
-    region_panel["region_spendings_lag_1"] = region_g.shift(1)
-    region_panel["region_spendings_lag_2"] = region_g.shift(2)
     region_panel["region_spendings_lag_3"] = region_g.shift(3)
     region_panel["region_spendings_lag_12"] = region_g.shift(12)
 
     shifted_region_spend = region_g.shift(1)
-    region_panel["region_spendings_rmean_3"] = (
-        shifted_region_spend
-        .groupby(region_panel["region"])
-        .rolling(window=3, min_periods=1)
-        .mean()
-        .reset_index(level=0, drop=True)
-    )
     region_panel["region_spendings_rmean_12"] = (
         shifted_region_spend
         .groupby(region_panel["region"])
@@ -79,17 +55,14 @@ def add_external_macro_features(
         .mean()
         .reset_index(level=0, drop=True)
     )
-    region_panel["region_spendings_mom_ratio"] = safe_divide(
-        region_panel["region_spendings_lag_1"],
-        region_panel["region_spendings_lag_2"],
-    )
+
     region_panel["region_spendings_yoy_ratio"] = safe_divide(
-        region_panel["region_spendings_lag_1"],
+        region_panel["region_spendings_inflated"],
         region_panel["region_spendings_lag_12"],
     )
-    region_panel["region_spendings_lag1_to_rmean3"] = safe_divide(
-        region_panel["region_spendings_lag_1"],
-        region_panel["region_spendings_rmean_3"],
+    region_panel["region_spendings_mom_ratio"] = safe_divide(
+        region_panel["region_spendings_inflated"],
+        region_panel["region_spendings_lag_3"],
     )
 
     macro_cols = [
@@ -97,59 +70,89 @@ def add_external_macro_features(
         "month",
         "region",
         "region_spendings_inflated",
-        "region_spendings_lag_1",
-        "region_spendings_lag_2",
         "region_spendings_lag_3",
         "region_spendings_lag_12",
-        "region_spendings_rmean_3",
         "region_spendings_rmean_12",
-        "region_spendings_mom_ratio",
         "region_spendings_yoy_ratio",
-        "region_spendings_lag1_to_rmean3",
+        "region_spendings_mom_ratio"
     ]
     return df.merge(region_panel[macro_cols], on=["year", "month", "region"], how="left")
 
 
-def add_cci_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Adds Consumer Confidence Index (CCI) features with lags and rolling stats.
-    
-    CCI is a global macro feature that doesn't vary by region/store.
-    Lags and rolling statistics are computed to capture temporal patterns.
+def add_avg_ticket(df: pd.DataFrame,
+                   inflation_file: str = "data/processed/inflation_coefficients.csv") -> pd.DataFrame:
     """
+    Добавляет признаки на основе среднего чека X5 Group.
+    Средний чек задан по кварталам, затем корректируется на помесячную инфляцию,
+    после чего вычисляются лаги и разницы.
+    """
+
     df = df.copy()
-    
-    # Map CCI values from the CCI dictionary using (year, month)
-    cci_values = np.array([
-        CCI.get((year, month), np.nan)
-        for year, month in zip(df["year"].values, df["month"].values)
-    ], dtype=np.float64)
-    
-    df["cci"] = cci_values
-    
-    # Create lags of CCI (using month as the time unit)
-    # CCI doesn't vary by store, so we can group by t (time period) instead
-    cci_panel = df[["year", "quarter", "t", "cci"]].drop_duplicates().sort_values("t").reset_index(drop=True)
-    cci_series = cci_panel["cci"]
-    
-    cci_panel["cci_lag_1"] = cci_series.shift(1)
-    cci_panel["cci_lag_2"] = cci_series.shift(2)
-    cci_panel["cci_lag_4"] = cci_series.shift(4)
+    if "quarter" not in df.columns:
+        df["quarter"] = ((df["month"] - 1) // 3 + 1).astype(np.int8)
+
+    avg_df = pd.DataFrame(
+        [(year, quarter, value) for (year, quarter), value in avg_ticket.items()],
+        columns=["year", "quarter", "avg_ticket"]
+    )
+
+    df = df.merge(avg_df, on=["year", "quarter"], how="left")
+
+    infl = pd.read_csv(inflation_file)
+    infl = infl[["year", "month", "inflation_coefficient"]]
+    df = df.merge(infl, on=["year", "month"], how="left")
+
+    df["avg_ticket_inflated"] = df["avg_ticket"] * df["inflation_coefficient"]
+
+    df = df.sort_values("t").reset_index(drop=True)
+
+    # 6. Глобальные лаги и разницы (макропоказатель, не зависит от региона)
+    df["avg_ticket_inflated_lag_3"] = df["avg_ticket_inflated"].shift(3)
+    df["avg_ticket_inflated_lag_12"] = df["avg_ticket_inflated"].shift(12)
+
+    df.drop(columns=["inflation_coefficient", "avg_ticket"], inplace=True)
+
+    return df
 
 
-    # CCI momentum (difference between current and lagged)
-    cci_panel["cci_diff_1"] = cci_panel["cci"] - cci_panel["cci_lag_1"]
-    cci_panel["cci_diff_4"] = cci_panel["cci"] - cci_panel["cci_lag_4"]
+def add_cci_features(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    if "quarter" not in df.columns:
+        df["quarter"] = ((df["month"] - 1) // 3 + 1).astype(np.int8)
     
+    # 1. Build quarterly panel
+    quarterly_panel = (
+        df[["year", "quarter", "t"]]
+        .drop_duplicates()
+        .sort_values("t")
+        .reset_index(drop=True)
+    )
+    quarterly_panel["cci"] = quarterly_panel.apply(
+        lambda row: CCI.get((row["year"], row["quarter"]), np.nan), axis=1
+    )
+    
+    # 2. Compute features
+    cci_series = quarterly_panel["cci"]
+    quarterly_panel["cci_lag_1"] = cci_series.shift(1)
+    quarterly_panel["cci_lag_2"] = cci_series.shift(2)
+    quarterly_panel["cci_lag_4"] = cci_series.shift(4)
+    quarterly_panel["cci_diff_1"] = quarterly_panel["cci"] - quarterly_panel["cci_lag_1"]
+    quarterly_panel["cci_diff_4"] = quarterly_panel["cci"] - quarterly_panel["cci_lag_4"]
+    quarterly_panel["cci_yoy_ratio"] = safe_divide(cci_series, cci_series.shift(4))
+    
+    # 3. Columns to merge (include 't' to avoid cartesian product)
     cci_cols = [
         "year", "quarter", "t",
-        "cci", "cci_lag_1", "cci_lag_2",
-        "cci_diff_1"
+        "cci", "cci_lag_1", "cci_lag_2", "cci_lag_4",
+        "cci_diff_1", "cci_diff_4", "cci_yoy_ratio"
     ]
     
-    # Merge back to main dataframe
-    cci_merge = cci_panel[cci_cols]
-    df = df.drop(columns=["cci", "cci_lag_4"], errors="ignore")
-    df = df.merge(cci_merge, on=["year", "quarter", "t"], how="left")
+    # 4. Remove old columns (but keep keys)
+    cols_to_drop = [c for c in cci_cols if c in df.columns and c not in ["year", "quarter", "t"]]
+    df = df.drop(columns=cols_to_drop, errors="ignore")
+    
+    # 5. Merge on (year, quarter, t) to avoid duplicate rows
+    df = df.merge(quarterly_panel[cci_cols], on=["year", "quarter", "t"], how="left")
     
     return df
 
@@ -186,20 +189,13 @@ def add_rolling_features(
         new_cols[max_col] = roll.max().reset_index(level=0, drop=True)
         new_cols[median_col] = roll.median().reset_index(level=0, drop=True)
 
+    # Compute CV (coefficient of variation) directly from rmean and rstd
     for window in (3, 6):
         rmean_col = f"{target}_rmean_{window}"
-        if rmean_col in new_cols:
-            new_cols[f"{target}_mean_{window}"] = new_cols[rmean_col]
-    for window in (3, 6):
         rstd_col = f"{target}_rstd_{window}"
-        if rstd_col in new_cols:
-            new_cols[f"{target}_std_{window}"] = new_cols[rstd_col]
-
-    if f"{target}_mean_3" in new_cols and f"{target}_std_3" in new_cols:
-        new_cols[f"{target}_cv_3"] = safe_divide(new_cols[f"{target}_std_3"], new_cols[f"{target}_mean_3"])
-
-    if f"{target}_mean_6" in new_cols and f"{target}_std_6" in new_cols:
-        new_cols[f"{target}_cv_6"] = safe_divide(new_cols[f"{target}_std_6"], new_cols[f"{target}_mean_6"])
+        if rmean_col in new_cols and rstd_col in new_cols:
+            new_cols[f"{target}_cv_{window}"] = safe_divide(new_cols[rstd_col], new_cols[rmean_col])
+        
     return with_columns(df, new_cols)
 
 
@@ -325,8 +321,8 @@ def add_expanding_stats(df: pd.DataFrame, target: str = "rto", group: str = "sto
         {
             f"{target}_cummean": cummean,
             f"{target}_cumstd": expanding.std().reset_index(level=0, drop=True),
-            f"{target}_cummax": expanding.max().reset_index(level=0, drop=True),
-            f"{target}_cummin": expanding.min().reset_index(level=0, drop=True),
+            # f"{target}_cummax": expanding.max().reset_index(level=0, drop=True),
+            # f"{target}_cummin": expanding.min().reset_index(level=0, drop=True),
             f"{target}_lag1_to_cummean": safe_divide(df.groupby(group)[target].shift(1), cummean),
         },
     )
@@ -445,23 +441,26 @@ def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFram
 
 def add_group_seasonality_features(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
     df = add_prev_year_group_mean(df, target, ["region"], "region_month_rto_mean_lag12")
-    df = compute_historical_march_feb_ratio(df, target, [], "global")
+    
+    # Compute historical ratio of current month to previous month (generalized for all months)
+    df = compute_historical_prev_month_ratio(df, target, [], "global")
     for prefix, group_cols in (
         ("region", ["region"]),
-        ("locality", ["locality"]),
+        ("locality", ["locality", "region"]),
     ):
-        df = compute_historical_march_feb_ratio(df, target, group_cols, prefix)
+        df = compute_historical_prev_month_ratio(df, target, group_cols, prefix)
 
-    df["region_march_feb_ratio"] = df["region_march_feb_ratio"].fillna(df["global_march_feb_ratio"])
+    # Create hierarchical city_month_prev_ratio: prefer locality if sufficient data, else region, else global
+    df["region_month_prev_ratio"] = df["region_month_prev_ratio"].fillna(df["global_month_prev_ratio"])
 
-    use_locality = df["locality_march_feb_ratio_hist_pairs"] >= 50
-    df["city_march_feb_ratio"] = np.where(
-        use_locality,
-        df["locality_march_feb_ratio"],
-        df["region_march_feb_ratio"],
-    )
-    df["city_march_feb_ratio"] = pd.Series(df["city_march_feb_ratio"]).fillna(df["global_march_feb_ratio"])
-    df.drop(columns=["global_march_feb_ratio", "global_march_feb_ratio_hist_pairs"], inplace=True)
+    df["city_month_prev_ratio"] = df["locality_month_prev_ratio"].copy()
+    df["city_month_prev_ratio"] = df["city_month_prev_ratio"].fillna(df["region_month_prev_ratio"])
+    df["city_month_prev_ratio"] = df["city_month_prev_ratio"].fillna(df["global_month_prev_ratio"])
+    
+    # Drop intermediate columns to keep feature space clean
+    df = df.drop(columns=["global_month_prev_ratio", "region_month_prev_ratio", "locality_month_prev_ratio"], 
+                 errors="ignore")
+    
     return df
 
 
@@ -469,14 +468,28 @@ def encode_categoricals_ordinal(
     df: pd.DataFrame,
     cat_cols: list[str] | tuple[str, ...] = CAT_COLS,
 ) -> tuple[pd.DataFrame, dict[str, list[str]]]:
+    """Ordinal: cat.codes + 1, чтобы NaN→0 (а не -1) и не было phantom-класса."""
     mappings: dict[str, list[str]] = {}
     for col in cat_cols:
         if col not in df.columns:
             continue
         df[col] = df[col].astype("category")
         mappings[col] = list(df[col].cat.categories)
-        df[col] = df[col].cat.codes.astype(np.int32)
+        # КРИТИЧНО: +1 чтобы NaN-код (-1) превратился в 0, а реальные категории — в 1..N.
+        df[col] = (df[col].cat.codes.astype(np.int32) + np.int32(1))
     return df, mappings
+
+
+def encode_categoricals_native(
+    df: pd.DataFrame,
+    cat_cols: list[str] | tuple[str, ...] = CAT_COLS,
+) -> pd.DataFrame:
+    """Native: оставляем pandas category dtype. Для XGBoost (enable_categorical=True),
+    LightGBM (auto-detect) и CatBoost (через Pool.cat_features)."""
+    for col in cat_cols:
+        if col in df.columns:
+            df[col] = df[col].astype("category")
+    return df
 
 
 def downcast(df):
@@ -545,9 +558,9 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
         "rto_seasonal_ratio_baseline",
         "rto_lag_12_per_day",
         "rto_per_day_yoy_ratio",
-        "global_march_feb_ratio",
-        "region_march_feb_ratio",
-        "city_march_feb_ratio",
+        "global_month_prev_ratio",
+        "region_month_prev_ratio",
+        "city_month_prev_ratio",
     }
 
     for col in feature_cols:
@@ -565,7 +578,7 @@ def get_feature_groups(feature_cols: list[str]) -> dict[str, list[str]]:
             groups["rolling"].append(col)
         elif col in growth_names:
             groups["growth_ratio"].append(col)
-        elif col in seasonal_names or "march_feb_ratio_hist_pairs" in col:
+        elif col in seasonal_names or "month_prev_ratio_hist_pairs" in col:
             groups["seasonality"].append(col)
         elif col.startswith("grp_") or col.endswith("_month_rto_mean_lag12"):
             groups["group_aggregates"].append(col)
@@ -596,7 +609,19 @@ def select_feature_columns(feature_cols: list[str], feature_groups: list[str] | 
 
 
 
-def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame, list[str], list[str]]:
+def build_features(
+    df: pd.DataFrame,
+    target: str = "rto",
+    cat_encoding: str = "native",
+) -> tuple[pd.DataFrame, list[str], list[str]]:
+    """Главный билдер фичей.
+
+    cat_encoding:
+        "native" — оставить CAT_COLS как pandas category dtype. Подходит для
+            LightGBM, XGBoost (enable_categorical=True), CatBoost.
+        "ordinal" — закодировать целыми (cat.codes + 1, NaN→0). Подходит для
+            Ridge/MLP, которые не умеют категории.
+    """
     df = df.sort_values(["store_id", "t"]).copy().reset_index(drop=True)
     df = add_external_macro_features(df)
     df = add_lag_features(df, target=target)
@@ -604,17 +629,28 @@ def build_features(df: pd.DataFrame, target: str = "rto") -> tuple[pd.DataFrame,
     df = add_diff_features(df, target=target)
     df = add_growth_ratio_features(df, target=target)
     df = add_seasonal_features(df, target=target)
-    df = add_trend_features(df, target=target)
+    df = add_trend_features(df, target=target)        
     df = add_expanding_stats(df, target=target)
     df = df.copy()
     df = add_dynamic_lags(df)
     df = add_calendar_features(df)
-    df = add_days_features(df, target=target)
+    # df = add_days_features(df, target=target)
     df = add_cci_features(df)
     df = add_group_aggregations(df, target=target)
+    df = add_avg_ticket(df)
     df = add_group_seasonality_features(df, target=target)
+    for col in DYNAMIC_COLS:
+        df = add_diff_features(df, target=col)
+        df = add_expanding_stats(df, target=col)
     df = df.copy()
-    df, _ = encode_categoricals_ordinal(df)
+
+    if cat_encoding == "ordinal":
+        df, _ = encode_categoricals_ordinal(df)
+    elif cat_encoding == "native":
+        df = encode_categoricals_native(df)
+    else:
+        raise ValueError(f"Unknown cat_encoding: {cat_encoding}")
+
     df = downcast(df)
 
     drop_cols = {target, "store_id", "year", "t", "month"} | set(DYNAMIC_COLS)
