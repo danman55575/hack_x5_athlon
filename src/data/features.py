@@ -411,7 +411,6 @@ def add_days_features(df: pd.DataFrame, target: str = "rto", group: str = "store
 
 
 def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFrame:
-    """Кросс-магазинные агрегаты только из уже известных лагов."""
     df = df.copy().reset_index(drop=True)
     df["_orig_pos"] = np.arange(len(df), dtype=np.int64)
     df["_rto_lag1"] = df.groupby("store_id")[target].shift(1)
@@ -423,16 +422,17 @@ def add_group_aggregations(df: pd.DataFrame, target: str = "rto") -> pd.DataFram
     for key in ["region", "locality", "area_cat", "open_date_cat"]:
         if key not in df.columns:
             continue
-        df[f"grp_{key}_lag1_mean"] = expanding_mean_shifted(df["_rto_lag1"], df[key])
-        df[f"grp_{key}_lag1_median"] = expanding_quantile_shifted(df["_rto_lag1"], df[key], 0.5)
-        df[f"grp_{key}_yoy_mean"] = expanding_mean_shifted(yoy, df[key])
-        df[f"grp_{key}_yoy_median"] = expanding_quantile_shifted(yoy, df[key], 0.5)
+        df[f"grp_{key}_lag1_mean"] = expanding_mean_shifted(df["_rto_lag1"], df[key], df["t"])
+        df[f"grp_{key}_lag1_median"] = expanding_quantile_shifted(df["_rto_lag1"], df[key], df["t"], 0.5)
+        df[f"grp_{key}_yoy_mean"] = expanding_mean_shifted(yoy, df[key], df["t"])
+        df[f"grp_{key}_yoy_median"] = expanding_quantile_shifted(yoy, df[key], df["t"], 0.5)
 
-    df["grp_all_lag1_mean"] = df.groupby("t")["_rto_lag1"].transform("mean")
-    df["grp_all_lag12_mean"] = df.groupby("t")["_rto_lag12"].transform("mean")
+    # ✅ ИСПРАВЛЕНО: глобальные признаки через expanding (без groupby("t"))
+    df["grp_all_lag1_mean"] = df["_rto_lag1"].expanding().mean().shift(1)
+    df["grp_all_lag12_mean"] = df["_rto_lag12"].expanding().mean().shift(1)
     yoy_macro = safe_divide(df["_rto_lag1"], df["_rto_lag13"])
-    df["grp_all_yoy_macro_mean"] = yoy_macro.groupby(df["t"]).transform("mean")
-    df["grp_all_yoy_macro_median"] = yoy_macro.groupby(df["t"]).transform("median")
+    df["grp_all_yoy_macro_mean"] = yoy_macro.expanding().mean().shift(1)
+    df["grp_all_yoy_macro_median"] = yoy_macro.expanding().quantile(0.5).shift(1)
 
     df = df.drop(columns=["_rto_lag1", "_rto_lag12", "_rto_lag13"])
     df = df.sort_values("_orig_pos", kind="mergesort").reset_index(drop=True)
@@ -643,7 +643,7 @@ def build_features(
     df = add_cci_features(df)
     df = add_group_aggregations(df, target=target)
     df = add_avg_ticket(df)
-    df = add_group_seasonality_features(df, target=target)
+    # df = add_group_seasonality_features(df, target=target)
     for col in DYNAMIC_COLS:
         df = add_diff_features(df, target=col)
         df = add_expanding_stats(df, target=col)

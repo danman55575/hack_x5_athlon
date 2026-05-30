@@ -1,0 +1,159 @@
+{
+  "name": "lgbm_l1_log",
+  "timestamp": "20260530_154412",
+  "model": "lightgbm",
+  "params": {
+    "learning_rate": 0.044525281185079396,
+    "num_leaves": 145,
+    "min_data_in_leaf": 147,
+    "feature_fraction": 0.9383699019515109,
+    "bagging_fraction": 0.9874898654932726,
+    "lambda_l1": 0.01267626753405789,
+    "lambda_l2": 0.0034612023532102406,
+    "max_depth": 0,
+    "objective": "regression_l1",
+    "metric": "mae",
+    "bagging_freq": 1,
+    "num_boost_round": 12000,
+    "early_stopping_rounds": 300,
+    "num_threads": 4,
+    "verbose": -1
+  },
+  "feature_groups": null,
+  "feature_count": 204,
+  "feature_audit": {
+    "feature_count": 204,
+    "rows": 503739,
+    "nan_feature_count": 169,
+    "total_nan": 17498135,
+    "all_nan_columns": [],
+    "inf_columns": [],
+    "top_nan_columns": {
+      "rto_naive_seasonal": 447768,
+      "rto_same_month_2y": 447768,
+      "rto_lag_18": 335826,
+      "rto_lag_17": 317169,
+      "rto_lag_16": 298512,
+      "rto_lag_15": 279855,
+      "rto_lag_14": 261198,
+      "rto_lag_2_div_lag_14": 261198,
+      "grp_all_yoy_macro_median": 242542,
+      "grp_all_yoy_macro_mean": 242542,
+      "rto_lag_12_div_lag_13": 242541,
+      "rto_lag_13": 242541,
+      "rto_seasonal_ratio_baseline": 242541,
+      "grp_open_date_cat_yoy_mean": 228251,
+      "grp_open_date_cat_yoy_median": 228251,
+      "grp_area_cat_yoy_median": 227763,
+      "grp_area_cat_yoy_mean": 227763,
+      "cancellations_yoy_ratio": 224332,
+      "grp_region_yoy_mean": 223964,
+      "grp_region_yoy_median": 223964
+    },
+    "top_inf_columns": {}
+  },
+  "cv_folds": [
+    {
+      "fold": "2025-02",
+      "mape": 4.594940905744776,
+      "score": 91.0212530077833,
+      "n_train": 466425,
+      "n_val": 18657,
+      "best_iters": [
+        199
+      ],
+      "weight": 3.0,
+      "segment_mapes": {
+        "large": 2719.8419416420825,
+        "medium": 2703.5637052620627,
+        "small": 2703.2544465855053
+      }
+    },
+    {
+      "fold": "2024-12",
+      "mape": 4.140775734456259,
+      "score": 91.8899087679181,
+      "n_train": 429111,
+      "n_val": 18657,
+      "best_iters": [
+        179
+      ],
+      "weight": 2.5,
+      "segment_mapes": {
+        "large": 2967.1460463061417,
+        "medium": 2972.70736645128,
+        "small": 3028.330089500571
+      }
+    },
+    {
+      "fold": "2024-09",
+      "mape": 5.2186724381103184,
+      "score": 89.83500054394229,
+      "n_train": 373140,
+      "n_val": 18657,
+      "best_iters": [
+        310
+      ],
+      "weight": 1.0,
+      "segment_mapes": {
+        "large": 2868.620150735366,
+        "medium": 2895.53222034222,
+        "small": 2897.8122885211897
+      }
+    },
+    {
+      "fold": "2024-03",
+      "mape": 4.292426954526217,
+      "score": 91.599395382547,
+      "n_train": 261198,
+      "n_val": 18657,
+      "best_iters": [
+        847
+      ],
+      "weight": 1.0,
+      "segment_mapes": {
+        "large": 2969.8695586051176,
+        "medium": 3039.3115767331856,
+        "small": 3002.180940574705
+      }
+    }
+  ],
+  "cv_mean_mape": 4.486381526134868,
+  "cv_mean_score": 91.22972358261792,
+  "cv_simple_mean_mape": 4.561704008209393,
+  "march_fold_mape": 4.292426954526217,
+  "top_feature_importance": {
+    "rto_lag_1": 10413729.072030663,
+    "locality": 947676.4100635052,
+    "rto_rmin_2": 333894.273506999,
+    "is_jan": 219757.5271577835,
+    "region": 218762.9851489067,
+    "rto_rmean_2": 218511.85488784313,
+    "month_cos": 170391.6937621832,
+    "rto_rmax_2": 162646.21101033688,
+    "rto_seasonal_ratio_baseline": 153007.25755417347,
+    "rto_diff_1": 91988.0306212902,
+    "rto_lag_12_div_lag_13": 90063.49243593216,
+    "month_sin": 68674.20173490047,
+    "households": 68169.44734561443,
+    "rto_lag_7": 61070.2252856493,
+    "cci_diff_1": 57005.29778075218,
+    "cashboxes": 48647.847076535225,
+    "rto_lag_11": 47343.90530741215,
+    "rto_slope_12": 46783.76039981842,
+    "rto_rmedian_2": 42448.88097798824,
+    "rto_pct_1": 40298.58430290222
+  },
+  "submission_path": "experiments\\predictions\\lgbm_l1_log_20260530_154412.csv",
+  "elapsed_seconds": 1488.8885552883148,
+  "n_seeds": 1,
+  "final_num_iters": 271,
+  "use_cat": true,
+  "mape_weights": false,
+  "target_transform": "log1p",
+  "final_iter_multiplier": 1.1,
+  "skip_final_train": false,
+  "sanity_cap_up": 2.0,
+  "sanity_cap_down": 0.5,
+  "apply_sanity_cap_in_cv": true
+}
