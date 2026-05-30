@@ -350,14 +350,8 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
         y_va_log = y_train_all.iloc[va_idx].values
         y_va_orig = df_feat.loc[va_idx, "rto"].values
         
-        # Normalize validation target by days_in_month (for MAPE metric consistency)
-        if "days_in_month" in df_feat.columns:
-            y_va_orig = y_va_orig / df_feat.loc[va_idx, "days_in_month"].astype(np.float32).values
-
-        # Compute sample weights (also normalized)
+        # Compute sample weights based on original targets
         tr_rto = df_feat.loc[tr_idx, "rto"].values
-        if "days_in_month" in df_feat.columns:
-            tr_rto = tr_rto / df_feat.loc[tr_idx, "days_in_month"].astype(np.float32).values
         sw = _maybe_weights(use_mape_weights, tr_rto)
         sw_v = None
 
@@ -374,9 +368,16 @@ def run_experiment(config: dict, train_path: str = "data/processed/v2.parquet") 
                 dump_path=cap_dump, tag=f"CV_{fold.name}",
             )
 
+        # Scale both predictions and targets by days_in_month for final metric computation
+        if "days_in_month" in df_feat.columns:
+            days_factor = df_feat.loc[va_idx, "days_in_month"].astype(np.float32).values
+            y_va_orig = y_va_orig * days_factor
+            pred_orig = pred_orig * days_factor
+
         m_val = mape(y_va_orig, pred_orig)
         score = mape_to_score(m_val)
         oof_pred[va_idx] = pred_orig
+        
         segment_mapes = _compute_segment_mapes(
             df_feat.loc[tr_idx, ["store_id", "rto"]],
             df_feat.loc[va_idx, ["store_id", "rto"]],
