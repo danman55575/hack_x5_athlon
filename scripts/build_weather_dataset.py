@@ -100,7 +100,10 @@ def _fetch_json(url: str, pause_s: float, retries: int = 3) -> dict[str, Any] | 
             return payload
         except Exception as exc:  # noqa: BLE001
             last_error = exc
-            wait_s = pause_s * attempt if pause_s > 0 else attempt
+            if "429" in str(exc):
+                wait_s = max(5.0 * attempt, pause_s * 20 * attempt if pause_s > 0 else attempt)
+            else:
+                wait_s = pause_s * attempt if pause_s > 0 else attempt
             print(f"Повтор запроса через {wait_s:.1f}с после ошибки: {exc}")
             time.sleep(wait_s)
     assert last_error is not None
@@ -298,12 +301,28 @@ def _fetch_weather_monthly(
     end_date: str,
     batch_size: int,
     pause_s: float,
+    weather_path: Path | None = None,
 ) -> pd.DataFrame:
     ok_coords = coords_df.loc[coords_df["geocode_status"] == "ok"].copy().reset_index(drop=True)
     if ok_coords.empty:
         raise RuntimeError("Нет ни одной успешно геокодированной точки для погоды.")
 
-    rows: list[pd.DataFrame] = []
+    key_cols = ["region"] if geo_level == "region" else ["locality", "region"]
+    existing = pd.DataFrame()
+    if weather_path is not None and weather_path.exists():
+        existing = pd.read_parquet(weather_path)
+        print(f"Найден частичный weather dataset, продолжаем: {weather_path}")
+
+    if not existing.empty:
+        done_keys = set(
+            tuple(row[col] for col in key_cols)
+            for _, row in existing[key_cols].drop_duplicates().iterrows()
+        )
+        ok_coords = ok_coords[
+            ~ok_coords[key_cols].apply(lambda row: tuple(row[col] for col in key_cols) in done_keys, axis=1)
+        ].reset_index(drop=True)
+
+    rows: list[pd.DataFrame] = [existing] if not existing.empty else []
     for start in range(0, len(ok_coords), batch_size):
         batch = ok_coords.iloc[start:start + batch_size].reset_index(drop=True)
         params = {
@@ -329,11 +348,17 @@ def _fetch_weather_monthly(
             monthly = _to_monthly_weather(item, key_payload=key_payload)
             if not monthly.empty:
                 rows.append(monthly)
+        weather = pd.concat(rows, ignore_index=True)
+        weather = weather.sort_values(key_cols + ["year", "month"]).reset_index(drop=True)
+        weather = weather.drop_duplicates(subset=key_cols + ["year", "month"], keep="last")
+        if weather_path is not None:
+            weather_path.parent.mkdir(parents=True, exist_ok=True)
+            weather.to_parquet(weather_path, index=False)
         print(f"Погода: обработан батч {start // batch_size + 1}, строк с погодой накоплено {sum(len(x) for x in rows)}")
 
     weather = pd.concat(rows, ignore_index=True)
-    key_cols = ["region"] if geo_level == "region" else ["locality", "region"]
     weather = weather.sort_values(key_cols + ["year", "month"]).reset_index(drop=True)
+    weather = weather.drop_duplicates(subset=key_cols + ["year", "month"], keep="last")
     return weather
 
 
@@ -372,6 +397,7 @@ def main() -> None:
         end_date=end_date,
         batch_size=int(args.batch_size),
         pause_s=args.pause_seconds,
+        weather_path=weather_path,
     )
     weather_path.parent.mkdir(parents=True, exist_ok=True)
     weather.to_parquet(weather_path, index=False)

@@ -1,0 +1,167 @@
+{
+  "name": "xgb_l1_mom_ratio_feature_study_selected_features_feature_study_selected_features_feature_study_selected_features",
+  "timestamp": "20260530_031032",
+  "model": "xgboost",
+  "params": {
+    "objective": "reg:absoluteerror",
+    "eval_metric": "mae",
+    "learning_rate": 0.07378785458381251,
+    "max_depth": 8,
+    "min_child_weight": 3.0391663163091183,
+    "subsample": 0.9493221359639179,
+    "colsample_bytree": 0.6346725645810871,
+    "reg_lambda": 0.001153578976518404,
+    "reg_alpha": 0.6800297993252882,
+    "tree_method": "hist",
+    "nthread": 4,
+    "num_boost_round": 12000,
+    "early_stopping_rounds": 300,
+    "gamma": 0.003051214012840694
+  },
+  "feature_groups": null,
+  "feature_allowlist_path": "experiments/reports/feature_study_selected_features.csv",
+  "feature_count": 54,
+  "feature_audit": {
+    "feature_count": 54,
+    "rows": 503739,
+    "nan_feature_count": 23,
+    "total_nan": 1697787,
+    "all_nan_columns": [],
+    "inf_columns": [],
+    "top_nan_columns": {
+      "rto_lag_14": 261198,
+      "rto_lag_13": 242541,
+      "days_in_month_lag_12": 223884,
+      "rto_lag_12": 223884,
+      "rto_lag_6": 111942,
+      "rto_lag_4": 74628,
+      "rto_mean_12": 74628,
+      "rto_lag_3": 55971,
+      "rto_std_6": 37314,
+      "rto_median_6": 37314,
+      "rto_max_6": 37314,
+      "rto_cv_6": 37314,
+      "rto_min_6": 37314,
+      "rto_mean_6": 37314,
+      "rto_lag_2": 37314,
+      "rto_std_3": 37314,
+      "days_in_month_lag_1": 18657,
+      "rto_mean_2": 18657,
+      "rto_mean_4": 18657,
+      "rto_median_3": 18657
+    },
+    "top_inf_columns": {}
+  },
+  "cv_folds": [
+    {
+      "fold": "2025-02",
+      "mape": 5.846348851481857,
+      "score": 88.6491002459685,
+      "n_train": 447768,
+      "n_val": 18657,
+      "best_iters": [
+        191,
+        405,
+        308
+      ],
+      "weight": 3.0,
+      "segment_mapes": {
+        "large": 6.006656539581319,
+        "medium": 5.726667230187569,
+        "small": 5.805722784676683
+      }
+    },
+    {
+      "fold": "2024-12",
+      "mape": 3.6509262638902245,
+      "score": 92.83144009806318,
+      "n_train": 410454,
+      "n_val": 18657,
+      "best_iters": [
+        1364,
+        4193,
+        4333
+      ],
+      "weight": 1.5,
+      "segment_mapes": {
+        "large": 3.4488130776870176,
+        "medium": 3.6865700413917395,
+        "small": 3.8173956725919154
+      }
+    },
+    {
+      "fold": "2024-09",
+      "mape": 4.612983358385614,
+      "score": 90.98682943787618,
+      "n_train": 354483,
+      "n_val": 18657,
+      "best_iters": [
+        4013,
+        2853,
+        3618
+      ],
+      "weight": 1.0,
+      "segment_mapes": {
+        "large": 5.223736325504203,
+        "medium": 4.294987587960212,
+        "small": 4.320226161692426
+      }
+    },
+    {
+      "fold": "2024-03",
+      "mape": 4.0283658263858015,
+      "score": 92.10554565954034,
+      "n_train": 242541,
+      "n_val": 18657,
+      "best_iters": [
+        555,
+        146,
+        1139
+      ],
+      "weight": 2.0,
+      "segment_mapes": {
+        "large": 4.354891851504616,
+        "medium": 3.944652561658546,
+        "small": 3.7855530659942427
+      }
+    }
+  ],
+  "cv_mean_mape": 4.75802012819175,
+  "cv_mean_score": 90.71898421892762,
+  "cv_simple_mean_mape": 4.534656075035874,
+  "march_fold_mape": 4.0283658263858015,
+  "top_feature_importance": {
+    "days_in_month_lag_1": 973.2893905639648,
+    "days_ratio_curr_to_lag1": 922.1957473754883,
+    "is_jan": 611.6208953857422,
+    "days_in_month_lag_12": 203.80090236663818,
+    "days_in_month": 114.54042720794678,
+    "non_working_days": 80.74714660644531,
+    "quarter": 74.99764156341553,
+    "month_sin": 70.12743473052979,
+    "month_cos": 50.647517681121826,
+    "is_feb": 25.068502187728882,
+    "te_region_month": 17.231149673461914,
+    "households": 15.826064586639404,
+    "population": 15.62036681175232,
+    "te_region": 13.463851690292358,
+    "te_open_date_cat": 12.922008395195007,
+    "rto_lag_12": 12.836079955101013,
+    "te_locality": 11.38637638092041,
+    "rto_cv_6": 10.775094628334045,
+    "rto_mean_12": 10.585607528686523,
+    "rto_lag_6": 10.03819191455841
+  },
+  "submission_path": "experiments\\predictions\\xgb_l1_mom_ratio_feature_study_selected_features_feature_study_selected_features_feature_study_selected_features_20260530_031032.csv",
+  "elapsed_seconds": 4719.920406341553,
+  "n_seeds": 3,
+  "final_num_iters": 928,
+  "use_cat": true,
+  "mape_weights": false,
+  "target_transform": "mom_ratio",
+  "final_iter_multiplier": 1.1,
+  "skip_final_train": false,
+  "sanity_cap_up": 2.0,
+  "sanity_cap_down": 0.5,
+  "apply_sanity_cap_in_cv": true
+}

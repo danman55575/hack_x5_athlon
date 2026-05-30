@@ -124,6 +124,18 @@ class XGBoostModel(BaseModel):
             return self.model_.predict(d, iteration_range=(0, it + 1))
         return self.model_.predict(d)
 
+    def feature_importance(self):
+        if self.model_ is None:
+            return None
+
+        # Для XGBoost используем gain по сплитам, чтобы importance была
+        # пригодна для отбора top-N признаков в feature study.
+        score = self.model_.get_score(importance_type="gain")
+        if not score:
+            return pd.Series(dtype=float)
+
+        return pd.Series(score, dtype=float).sort_values(ascending=False)
+
 
 class CatBoostModel(BaseModel):
     name = "catboost"
@@ -165,9 +177,16 @@ class CatBoostModel(BaseModel):
         return self.model_.predict(X)
 
     def feature_importance(self):
-        if self.model_ is None: return None
-        return pd.Series(self.model_.get_feature_importance(),
-                         index=self.model_.feature_names_).sort_values(ascending=False)
+        if self.model_ is None:
+            return None
+
+        # Для XGBoost используем штатный gain по деревьям, чтобы importance
+        # была сопоставима с LightGBM и пригодна для отбора фичей.
+        score = self.model_.get_score(importance_type="gain")
+        if not score:
+            return pd.Series(dtype=float)
+
+        return pd.Series(score, dtype=float).sort_values(ascending=False)
 
 
 MODEL_REGISTRY = {

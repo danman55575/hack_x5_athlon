@@ -500,6 +500,7 @@ def run_ratio_experiment(
     feature_groups: list[str],
     folds: list,
     mode: str,
+    comment: str,
     allowed_features: set[str] | None = None,
 ) -> StudyResult:
     feat_cols, dropped = _select_experiment_features(all_feature_cols, feature_groups, allowed_features)
@@ -510,11 +511,11 @@ def run_ratio_experiment(
     cat_in = [c for c in cat_features if c in feat_cols] if config.get("use_cat", True) else None
     seeds = list(config.get("seed_bag", [config.get("seed", 2026)]))
     params = dict(config.get("params", {}))
-    params["objective"] = "regression_l1"
-    params["metric"] = "mae"
 
     fold_mapes: dict[str, float] = {}
     segment_rows: list[dict[str, float]] = []
+    oof = np.full(len(df_feat), np.nan, dtype=np.float64)
+    fi_parts: list[pd.Series] = []
 
     if mode == "mom_ratio":
         denom_col = "rto_lag_1"
@@ -535,7 +536,7 @@ def run_ratio_experiment(
 
         clip_low, clip_high = train["ratio_target"].quantile([0.01, 0.99]).tolist()
         y_tr = train["ratio_target"].clip(clip_low, clip_high).values.astype(np.float64)
-        pred_ratio, _, _ = _train_seed_bag(
+        pred_ratio, _, fold_model = _train_seed_bag(
             config["model"],
             params,
             train[feat_cols],
@@ -558,6 +559,17 @@ def run_ratio_experiment(
                 pred_orig,
             )
         )
+        oof[valid.index] = pred_orig
+        if hasattr(fold_model, "feature_importance"):
+            fold_fi = fold_model.feature_importance()
+            if fold_fi is not None:
+                fi_parts.append(fold_fi.rename(fold.name))
+
+    mean_fi = None
+    top_features: list[str] = []
+    if fi_parts:
+        mean_fi = pd.concat(fi_parts, axis=1).fillna(0.0).mean(axis=1).sort_values(ascending=False)
+        top_features = mean_fi.head(15).index.tolist()
 
     return StudyResult(
         name=f"{config['name']}_{mode}",
@@ -574,11 +586,12 @@ def run_ratio_experiment(
         segment_small=_aggregate_segment_metric(segment_rows, "small"),
         segment_medium=_aggregate_segment_metric(segment_rows, "medium"),
         segment_large=_aggregate_segment_metric(segment_rows, "large"),
-        top_features=[],
+        top_features=top_features,
         comment="Быстрый ratio-target без финального прогона",
         selected_features=feat_cols,
         dropped_by_top100=dropped,
-        oof_pred=None,
+        feature_importance=mean_fi,
+        oof_pred=oof,
     )
 
 
@@ -795,6 +808,53 @@ def _build_experiments() -> list[tuple[str, list[str], str]]:
     ]
 
 
+def _model_alias(model_name: str) -> str:
+    return {
+        "lightgbm": "lgbm",
+        "xgboost": "xgb",
+        "catboost": "cat",
+    }.get(model_name, model_name)
+
+
+def _run_study_experiment(
+    *,
+    target_mode: str,
+    df_feat: pd.DataFrame,
+    all_feature_cols: list[str],
+    cat_features: list[str],
+    y_train_all: pd.Series,
+    config: dict,
+    feature_groups: list[str],
+    folds: list,
+    comment: str,
+    allowed_features: set[str] | None,
+) -> StudyResult:
+    if target_mode == "log1p":
+        return run_log_experiment(
+            df_feat=df_feat,
+            all_feature_cols=all_feature_cols,
+            cat_features=cat_features,
+            y_train_all=y_train_all,
+            config=config,
+            feature_groups=feature_groups,
+            folds=folds,
+            comment=comment,
+            allowed_features=allowed_features,
+        )
+
+    return run_ratio_experiment(
+        df_feat=df_feat,
+        all_feature_cols=all_feature_cols,
+        cat_features=cat_features,
+        config=config,
+        feature_groups=feature_groups,
+        folds=folds,
+        mode=target_mode,
+        comment=comment,
+        allowed_features=allowed_features,
+    )
+
+
 def _write_feature_list(path: Path, feature_importance: pd.Series, limit: int | None = None) -> None:
     frame = feature_importance.reset_index()
     frame.columns = ["feature", "importance"]
@@ -896,6 +956,7 @@ def main() -> None:
     parser.add_argument("--train", default="data/processed/v2.parquet")
     parser.add_argument("--config", default="configs/lgbm.yaml")
     parser.add_argument("--mode", choices=["all", "eda", "experiments"], default="all")
+    parser.add_argument("--study-target", choices=["log1p", "mom_ratio", "yoy_ratio"], default="log1p")
     parser.add_argument("--top-n-features", type=int, default=100)
     parser.add_argument("--quick-num-boost-round", type=int, default=300)
     parser.add_argument("--quick-early-stopping-rounds", type=int, default=50)
@@ -921,11 +982,12 @@ def main() -> None:
     base_cfg["seed_bag"] = [base_cfg.get("seed", 2026)]
     base_cfg["params"]["num_boost_round"] = args.quick_num_boost_round
     base_cfg["params"]["early_stopping_rounds"] = args.quick_early_stopping_rounds
-    base_cfg["cv_val_months"] = [[2025, 2], [2024, 12], [2024, 3]]
+    base_cfg.setdefault("cv_val_months", [[2025, 2], [2024, 12], [2024, 3]])
+    study_prefix = f"{_model_alias(base_cfg['model'])}_{args.study_target}"
 
     df_feat, all_feature_cols, cat_features, y_train_all, _, full_audit = _prepare(
         args.train,
-        target_transform="log1p",
+        target_transform=args.study_target,
         winsorize_quantile=float(base_cfg.get("winsorize_quantile", 0.999)),
         feature_groups=None,
     )
@@ -957,11 +1019,12 @@ def main() -> None:
 
     reference_cfg = {
         **base_cfg,
-        "name": "lgbm_reference_top100",
+        "name": f"{study_prefix}_reference_top{args.top_n_features}",
         "save_oof": False,
         "skip_final_train": True,
     }
-    reference_result = run_log_experiment(
+    reference_result = _run_study_experiment(
+        target_mode=args.study_target,
         df_feat=df_feat,
         all_feature_cols=all_feature_cols,
         cat_features=cat_features,
@@ -985,11 +1048,12 @@ def main() -> None:
     for exp_name, feature_groups, comment in _build_experiments():
         cfg = {
             **base_cfg,
-            "name": exp_name,
+            "name": exp_name.replace("lgbm", study_prefix, 1),
             "save_oof": False,
             "skip_final_train": True,
         }
-        result = run_log_experiment(
+        result = _run_study_experiment(
+            target_mode=args.study_target,
             df_feat=df_feat,
             all_feature_cols=all_feature_cols,
             cat_features=cat_features,
@@ -1008,73 +1072,83 @@ def main() -> None:
         )
 
     model_results = [row for row in results if row.model != "baseline"]
-    best_log = min(
+    best_result = min(
         model_results,
         key=lambda row: (row.mean_mape, math.inf if row.march_fold_mape is None else row.march_fold_mape),
     )
 
-    ratio_cfg = {
-        **base_cfg,
-        "name": "lgbm_best_ratio",
-        "save_oof": False,
-        "skip_final_train": True,
-    }
-    results.append(
-        run_ratio_experiment(
-            df_feat=df_feat,
-            all_feature_cols=all_feature_cols,
-            cat_features=cat_features,
-            config=ratio_cfg,
-            feature_groups=best_log.feature_groups,
-            folds=folds,
-            mode="mom_ratio",
-            allowed_features=allowed_features,
+    if args.study_target == "log1p":
+        ratio_cfg = {
+            **base_cfg,
+            "name": f"{_model_alias(base_cfg['model'])}_best_ratio",
+            "save_oof": False,
+            "skip_final_train": True,
+        }
+        results.append(
+            run_ratio_experiment(
+                df_feat=df_feat,
+                all_feature_cols=all_feature_cols,
+                cat_features=cat_features,
+                config=ratio_cfg,
+                feature_groups=best_result.feature_groups,
+                folds=folds,
+                mode="mom_ratio",
+                comment="Быстрый ratio-target без финального прогона.",
+                allowed_features=allowed_features,
+            )
         )
-    )
-    results.append(
-        run_ratio_experiment(
-            df_feat=df_feat,
-            all_feature_cols=all_feature_cols,
-            cat_features=cat_features,
-            config=ratio_cfg,
-            feature_groups=best_log.feature_groups,
-            folds=folds,
-            mode="yoy_ratio",
-            allowed_features=allowed_features,
+        results.append(
+            run_ratio_experiment(
+                df_feat=df_feat,
+                all_feature_cols=all_feature_cols,
+                cat_features=cat_features,
+                config=ratio_cfg,
+                feature_groups=best_result.feature_groups,
+                folds=folds,
+                mode="yoy_ratio",
+                comment="Быстрый ratio-target без финального прогона.",
+                allowed_features=allowed_features,
+            )
         )
-    )
+        model_results = [row for row in results if row.model != "baseline"]
+        best_result = min(
+            model_results,
+            key=lambda row: (row.mean_mape, math.inf if row.march_fold_mape is None else row.march_fold_mape),
+        )
 
+    best_log = best_result
     best_oof_cfg = {
         **base_cfg,
-        "name": f"{best_log.name}_oof",
+        "name": f"{best_result.name}_oof",
         "save_oof": False,
         "skip_final_train": True,
     }
-    best_log_with_oof = run_log_experiment(
+    best_result_with_oof = _run_study_experiment(
+        target_mode=best_result.target if best_result.target != "log1p_rto" else "log1p",
         df_feat=df_feat,
         all_feature_cols=all_feature_cols,
         cat_features=cat_features,
         y_train_all=y_train_all,
         config=best_oof_cfg,
-        feature_groups=best_log.feature_groups,
+        feature_groups=best_result.feature_groups,
         folds=folds,
         comment=f"{best_log.comment} Повтор для OOF-графиков.",
         allowed_features=allowed_features,
     )
 
-    _write_selected_features(SELECTED_FEATURES_PATH, best_log.selected_features)
+    _write_selected_features(SELECTED_FEATURES_PATH, best_result.selected_features)
 
     results_df = _result_rows(results)
     results_df.to_csv(RESULTS_PATH, index=False, encoding="utf-8")
     artifacts.extend(_save_experiment_plots(results_df, reference_result))
-    artifacts.extend(_save_best_experiment_plots(df_feat, best_log_with_oof))
+    artifacts.extend(_save_best_experiment_plots(df_feat, best_result_with_oof))
     _write_text_report(
         REPORT_PATH,
         eda_summary=eda_summary,
         feature_checks=feature_checks,
         results_df=results_df,
         reference_result=reference_result,
-        best_result=best_log,
+        best_result=best_result,
         artifacts=artifacts,
     )
 
@@ -1084,8 +1158,8 @@ def main() -> None:
     )
     print("\nЛучший быстрый эксперимент:")
     print(
-        f"  {best_log.name}: mean_mape={best_log.mean_mape:.4f}, "
-        f"march_fold={best_log.march_fold_mape}, features={best_log.feature_count}"
+        f"  {best_result.name}: mean_mape={best_result.mean_mape:.4f}, "
+        f"march_fold={best_result.march_fold_mape}, features={best_result.feature_count}"
     )
     print(f"Top-100 список: {TOP100_PATH}")
     print(f"Выбранные фичи: {SELECTED_FEATURES_PATH}")
